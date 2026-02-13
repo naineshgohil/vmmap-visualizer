@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
+const parser = @import("parser.zig");
 
 /// Manages periodic vmmap snapshot collection for a target process.
 /// Runs a background thread that spawns `vmmap <pid>` at a fixed interval,
@@ -102,11 +103,11 @@ pub const Collector = struct {
 
         const timestamp = std.time.milliTimestamp();
 
-        // TODO: parse output into regions (Phase 3)
-        // For now, store raw output length as a placeholder
+        const regions = try parser.parse(self.allocator, output);
+
         const snapshot = types.Snapshot{
             .timestamp_ms = timestamp,
-            .regions = &.{},
+            .regions = regions,
             .allocator = self.allocator,
         };
 
