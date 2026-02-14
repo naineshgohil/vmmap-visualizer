@@ -11,9 +11,18 @@ import {
   SafeAreaProvider,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
+import { useCollector } from './useCollector';
+import { useEffect } from 'react';
 
 function App() {
   const isDarkMode = useColorScheme() === 'dark';
+  const { getSnapshots } = useCollector();
+
+  useEffect(() => {
+    setInterval(() => {
+      console.log(getSnapshots());
+    }, 3 * 10 * 1000);
+  }, [getSnapshots]);
 
   return (
     <SafeAreaProvider>
