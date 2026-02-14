@@ -75,31 +75,3 @@ export fn collector_snapshot_count(collector: ?*Collector) callconv(.c) c_uint {
 
     return 0;
 }
-
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    if (args.len < 2) {
-        std.debug.print("Usage: vmmap_collector <pid>\n", .{});
-        return;
-    }
-
-    const pid = std.fmt.parseInt(std.posix.pid_t, args[1], 10) catch {
-        std.debug.print("Invalid PID: {s}\n", .{args[1]});
-        return;
-    };
-
-    const collector_mod = @import("collector.zig");
-    var collector = collector_mod.Collector.init(allocator, pid, 1000);
-    defer collector.deinit();
-
-    try collector.start();
-
-    std.Thread.sleep(3 * std.time.ns_per_s);
-
-    collector.stop();
-
-    std.debug.print("Collected {d} snapshots\n", .{collector.snapshots.items.len});
-}
