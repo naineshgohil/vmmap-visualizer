@@ -3,9 +3,10 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "macos": "npx react-native run-macos",
     "lint": "eslint .",
-    "start": "react-native start",
+    "start": "npx react-native start",
+    "macos": "npx react-native run-macos",
+    "dev": "npx react-native run-macos & npx react-native start",
     "test": "jest"
   },
   "dependencies": {
