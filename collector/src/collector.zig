@@ -68,11 +68,13 @@ pub const Collector = struct {
     /// next tick.
     fn collectionLoop(self: *Collector) void {
         while (self.running.load(.acquire)) {
+            std.debug.print("[vmmap] capturing snapshot for pid {d}...\n", .{self.pid});
             self.captureSnapshot() catch |err| {
                 std.debug.print("Snapshot failed: {}\n", .{err});
             };
             std.Thread.sleep(self.interval_ms * std.time.ns_per_ms);
         }
+        std.debug.print("[vmmap] collection loop exited\n", .{});
     }
 
     /// Spawn `vmmap <pid>` as a child process, read its stdout (up to 10MB),
@@ -98,12 +100,10 @@ pub const Collector = struct {
         const result = try child.wait();
         if (result.Exited != 0) return error.VmmapFailed;
 
-        // Print raw output
-        std.debug.print("{s}\n", .{output});
-
         const timestamp = std.time.milliTimestamp();
 
         const regions = try parser.parse(self.allocator, output);
+        std.debug.print("[vmmap] snapshot: {d} regions, {d} bytes output\n", .{ regions.len, output.len });
 
         const snapshot = types.Snapshot{
             .timestamp_ms = timestamp,
