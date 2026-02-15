@@ -4,6 +4,11 @@ const Collector = @import("collector.zig").Collector;
 
 var global_allocator: std.mem.Allocator = undefined;
 
+const Result = extern struct {
+    ok: bool,
+    error_msg: ?[*:0]const u8 = null,
+};
+
 /// Set global_allocator to c_allocator (malloc/free). Must be called once before
 /// any other vmmap_* function. Uses callconv(.c) so the symbol is callable from
 /// C / Objective-C / any C FFI — this is how the React Native bridge will call it.
@@ -21,21 +26,30 @@ export fn vmmap_collector_create(pid: c_int, interval_ms: c_uint) callconv(.c) ?
 /// Free a Collector and all its snapshots. Safe to call with null (no-op).
 /// `if (collector) |c|` unwraps the optional — body only runs when non-null.
 export fn vmmap_collector_destroy(collector: ?*Collector) callconv(.c) void {
+    std.debug.print("[vmmap] destroy\n", .{});
     if (collector) |c| {
         c.deinit();
         global_allocator.destroy(c);
     }
 }
 
-/// Spawn the background collection thread. Returns -1 on failure (thread spawn
-/// error or null collector). The thread loops: spawn vmmap, parse, append snapshot,
-/// sleep interval_ms, repeat — until vmmap_collector_stop is called.
-export fn vmmap_collector_start(collector: ?*Collector) callconv(.c) c_int {
+/// Spawn the background collection thread. Returns a Result struct: ok=true on
+/// success, ok=false with error_msg on failure (null collector or thread spawn error).
+/// The thread loops: spawn vmmap, parse, append snapshot, sleep interval_ms, repeat
+/// — until vmmap_collector_stop is called.
+export fn vmmap_collector_start(collector: ?*Collector) callconv(.c) Result {
     std.debug.print("[vmmap] start\n", .{});
-    if (collector) |c| {
-        c.start() catch return -1;
-    }
-    return -1;
+    const c = collector orelse return .{
+        .ok = false,
+        .error_msg = "Collector not initialized",
+    };
+    c.start() catch return .{
+        .ok = false,
+        .error_msg = "Failed to spawn collection thread",
+    };
+    return .{
+        .ok = true,
+    };
 }
 
 /// Signal the collection thread to stop and join it. Blocks until the thread

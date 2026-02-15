@@ -8,10 +8,15 @@
 #import <React/RCTBridgeModule.h>
 #import <dlfcn.h>
 
+typedef struct {
+  bool ok;
+  const char *error_msg;
+} Result;
+
 // Function pointers to Zig dylib
 typedef void* (*CreateFn)(int, unsigned int);
 typedef void (*DestroyFn)(void*);
-typedef int (*StartFn)(int*);
+typedef Result (*StartFn)(void*);
 typedef void (*StopFn)(void*);
 typedef unsigned int (*CountFn)(void*);
 typedef char* (*GetJsonFn)(void*);
@@ -48,23 +53,34 @@ RCT_EXPORT_MODULE();
       _getJsonFn = dlsym(_libHandle, "vmmap_collector_get_snapshots_json");
       _freeStringFn = dlsym(_libHandle, "vmmap_free_string");
     }
-    
   }
   
   return self;
 }
 
-RCT_EXPORT_METHOD(create:(int)pid interval:(int)intervalMs) {
+RCT_EXPORT_METHOD(create:(int)pid interval:(int)intervalMs resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject) {
   if (_collector) {
     _destroyFn(_collector);
   }
   
   _collector = _createFn(pid, (unsigned int) intervalMs);
+  
+  if (_collector) {
+    resolve(@"");
+  } else {
+    reject(@"NO_DATA", @"Collector not initialized", nil);
+  }
 }
 
-RCT_EXPORT_METHOD(start) {
+RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject) {
   if (_collector && _startFn) {
-    _startFn(_collector);
+    Result r = _startFn(_collector);
+    
+    if (r.ok) {
+      resolve(@"");
+    } else {
+      reject(@"START_FAILED", [NSString stringWithUTF8String:r.error_msg], nil);
+    }
   }
 }
 
