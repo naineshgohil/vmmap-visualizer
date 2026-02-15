@@ -18,8 +18,14 @@ export interface Snapshot {
 
 export function useCollector() {
   useEffect(() => {
-    VmmapCollectorModule.create(665, 1000);
-    VmmapCollectorModule.start();
+    (async () => {
+      try {
+        await VmmapCollectorModule.create(700, 1000);
+        await VmmapCollectorModule.start();
+      } catch (error) {
+        console.log('Collector error', error);
+      }
+    })();
 
     return () => {
       VmmapCollectorModule.stop();
