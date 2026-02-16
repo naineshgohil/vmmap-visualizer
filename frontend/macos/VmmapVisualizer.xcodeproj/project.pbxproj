@@ -220,7 +220,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if command -v /opt/homebrew/bin/zig &>/dev/null; then\n    ZIG=/opt/homebrew/bin/zig\n  elif command -v zig &>/dev/null; then\n    ZIG=$(command -v zig)\n  else\n    echo \"error: Zig is required. Install with: brew install zig\"\n    exit 1\n  fi\n\n  cd \"$SRCROOT/../../collector\"\n  \"$ZIG\" build -Doptimize=ReleaseFast\n\n  mkdir -p \"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\n  cp zig-out/lib/libvmmap_collector.dylib \"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources/\"\n";
+			shellScript = "if command -v /opt/homebrew/bin/zig &>/dev/null; then\n    ZIG=/opt/homebrew/bin/zig\n  elif command -v zig &>/dev/null; then\n    ZIG=$(command -v zig)\n  else\n    echo \"error: Zig is required. Install with: brew install zig\"\n    exit 1\n  fi\n\n  cd \"$SRCROOT/../../collector\"\n  \"$ZIG\" build -Doptimize=ReleaseFast\n\n  mkdir -p \"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\n  cp zig-out/lib/libvmmap_collector.dylib \"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources/\"\n\n";
 		};
 		194A28275F199B44B621D2FC /* [CP] Embed Pods Frameworks */ = {
 			isa = PBXShellScriptBuildPhase;
