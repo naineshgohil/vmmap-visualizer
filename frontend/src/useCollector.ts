@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
-import { NativeModules } from 'react-native';
+import { NativeModules, NativeEventEmitter } from 'react-native';
 
 const { VmmapCollectorModule } = NativeModules;
+const emitter = new NativeEventEmitter(VmmapCollectorModule);
 
 export interface Region {
   type: string;
@@ -20,7 +21,7 @@ export function useCollector() {
   useEffect(() => {
     (async () => {
       try {
-        await VmmapCollectorModule.create(700, 1000);
+        await VmmapCollectorModule.create(25038, 1000);
         await VmmapCollectorModule.start();
       } catch (error) {
         console.log('Collector error', error);
@@ -32,10 +33,11 @@ export function useCollector() {
     };
   }, []);
 
-  const getSnapshots = async (): Promise<Snapshot[]> => {
-    const json = await VmmapCollectorModule.getSnapshots();
-    return JSON.parse(json);
-  };
+  useEffect(() => {
+    const { remove } = emitter.addListener('onSnapshot', snapshot => {
+      console.log('App: snapshot', snapshot);
+    });
 
-  return { getSnapshots };
+    return () => remove();
+  }, []);
 }
