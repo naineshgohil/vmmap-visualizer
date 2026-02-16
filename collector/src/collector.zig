@@ -4,7 +4,8 @@ const parser = @import("parser.zig");
 
 /// Manages periodic vmmap snapshot collection for a target process.
 /// Runs a background thread that spawns `vmmap <pid>` at a fixed interval,
-/// parses the output, and appends Snapshots to an ArrayList.
+/// parses the output, appends Snapshots to an ArrayList, and pushes each
+/// new snapshot to the caller via on_snapshot callback.
 pub const Collector = struct {
     pid: std.posix.pid_t,
     interval_ms: u32,
@@ -12,11 +13,17 @@ pub const Collector = struct {
     running: std.atomic.Value(bool),
     allocator: std.mem.Allocator,
     thread: ?std.Thread,
+    on_snapshot: ?*const fn (*const types.Snapshot) void,
 
     /// Construct a Collector on the stack. No heap allocation or threads yet —
-    /// just stores config and initializes the snapshot list. Call start() to
-    /// begin collecting.
-    pub fn init(allocator: std.mem.Allocator, pid: std.posix.pid_t, interval_ms: u32) Collector {
+    /// just stores config, initializes the snapshot list, and registers the
+    /// on_snapshot callback. Call start() to begin collecting.
+    pub fn init(
+        allocator: std.mem.Allocator,
+        pid: std.posix.pid_t,
+        interval_ms: u32,
+        on_snapshot: ?*const fn (*const types.Snapshot) void,
+    ) Collector {
         return .{
             .pid = pid,
             .interval_ms = interval_ms,
@@ -24,6 +31,7 @@ pub const Collector = struct {
             .running = std.atomic.Value(bool).init(false),
             .allocator = allocator,
             .thread = null,
+            .on_snapshot = on_snapshot,
         };
     }
 
@@ -44,6 +52,7 @@ pub const Collector = struct {
     /// before entering collectionLoop.
     pub fn start(self: *Collector) !void {
         if (self.running.load(.acquire)) return;
+        std.debug.print("[vmmap] start: spawning collection thread for pid {d}\n", .{self.pid});
         self.running.store(true, .release);
         self.thread = try std.Thread.spawn(.{}, collectionLoop, .{self});
     }
@@ -54,11 +63,13 @@ pub const Collector = struct {
     /// mid-capture when we return — safe to call deinit() after this.
     pub fn stop(self: *Collector) void {
         if (!self.running.load(.acquire)) return;
+        std.debug.print("[vmmap] stop: signaling collection thread\n", .{});
         self.running.store(false, .release);
 
         if (self.thread) |t| {
             t.join();
             self.thread = null;
+            std.debug.print("[vmmap] stop: collection thread joined\n", .{});
         }
     }
 
@@ -78,11 +89,13 @@ pub const Collector = struct {
     }
 
     /// Spawn `vmmap <pid>` as a child process, read its stdout (up to 10MB),
-    /// and append a timestamped Snapshot. The pid is formatted into a stack
-    /// buffer (no heap alloc needed for a small int-to-string conversion).
-    /// stdout is read fully before wait() to avoid deadlock — if vmmap fills
-    /// the pipe buffer and blocks on write, wait() would never return.
+    /// append a timestamped Snapshot, and invoke on_snapshot callback if set.
+    /// The pid is formatted into a stack buffer (no heap alloc needed for a
+    /// small int-to-string conversion). stdout is read fully before wait() to
+    /// avoid deadlock — if vmmap fills the pipe buffer and blocks on write,
+    /// wait() would never return.
     fn captureSnapshot(self: *Collector) !void {
+        std.debug.print("[vmmap] captureSnapshot: spawning vmmap for pid {d}\n", .{self.pid});
         var pid_buf: [16]u8 = undefined;
         const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{self.pid}) catch unreachable;
 
@@ -112,5 +125,11 @@ pub const Collector = struct {
         };
 
         try self.snapshots.append(self.allocator, snapshot);
+        std.debug.print("[vmmap] captureSnapshot: appended, total={d}\n", .{self.snapshots.items.len});
+
+        if (self.on_snapshot) |cb| {
+            std.debug.print("[vmmap] captureSnapshot: invoking on_snapshot callback\n", .{});
+            cb(&snapshot);
+        }
     }
 };
