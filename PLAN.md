@@ -120,15 +120,15 @@ Features:
 
 Parse vmmap output to extract per-region data:
 
-| Field | Example |
-|-------|---------|
-| Region type | `MALLOC_SMALL`, `__TEXT`, `Stack` |
-| Start/End address | `100484000-100f3c000` (hex) |
-| Virtual size | `10.7M` |
-| Resident size | `7904K` |
-| Permissions | `r-x/r-x` |
-| Sharing mode | `COW`, `PRV`, `SHM` |
-| Detail | `/path/to/binary` |
+| Field             | Example                           |
+| ----------------- | --------------------------------- |
+| Region type       | `MALLOC_SMALL`, `__TEXT`, `Stack` |
+| Start/End address | `100484000-100f3c000` (hex)       |
+| Virtual size      | `10.7M`                           |
+| Resident size     | `7904K`                           |
+| Permissions       | `r-x/r-x`                         |
+| Sharing mode      | `COW`, `PRV`, `SHM`               |
+| Detail            | `/path/to/binary`                 |
 
 **Data structures**:
 ```zig
@@ -192,15 +192,15 @@ function Timeline({ snapshots, width, height }) {
 
 ### Color coding by category
 
-| Category | Region Types | Color |
-|----------|-------------|-------|
-| Code | `__TEXT`, `__LINKEDIT` | `#3b82f6` (Blue) |
-| Data | `__DATA`, `__DATA_CONST`, `__OBJC_*` | `#22c55e` (Green) |
-| Heap | `MALLOC_*` | `#f97316` (Orange) |
-| Stack | `Stack`, `STACK GUARD` | `#ef4444` (Red) |
-| Mapped | `mapped file` | `#a855f7` (Purple) |
-| Shared | `shared memory` | `#06b6d4` (Cyan) |
-| System | `IOKit`, `CoreAnimation`, `Kernel Alloc Once` | `#6b7280` (Gray) |
+| Category | Region Types                                  | Color              |
+| -------- | --------------------------------------------- | ------------------ |
+| Code     | `__TEXT`, `__LINKEDIT`                        | `#3b82f6` (Blue)   |
+| Data     | `__DATA`, `__DATA_CONST`, `__OBJC_*`          | `#22c55e` (Green)  |
+| Heap     | `MALLOC_*`                                    | `#f97316` (Orange) |
+| Stack    | `Stack`, `STACK GUARD`                        | `#ef4444` (Red)    |
+| Mapped   | `mapped file`                                 | `#a855f7` (Purple) |
+| Shared   | `shared memory`                               | `#06b6d4` (Cyan)   |
+| System   | `IOKit`, `CoreAnimation`, `Kernel Alloc Once` | `#6b7280` (Gray)   |
 
 ## Phase 5: Interactivity
 
@@ -253,4 +253,5 @@ yarn macos
 1. **Zig to React Native bridge** - Need Objective-C wrapper to expose Zig functions as native module
 2. **Log scale rendering** - Address space spans ~48 bits; need careful scaling for visualization
 3. **Performance** - Many regions (1000+) may need virtualization or canvas fallback
-4. **Real-time updates** - Bridging snapshot data from Zig thread to JS efficiently
+4. **Real-time updates** - Switch from pull-based polling (`getSnapshots`) to push-based events (`RCTEventEmitter`). Collection thread serializes each snapshot to JSON immediately after capture, then signals the ObjC module which emits an `onSnapshot` event to JS. This eliminates polling, sends one snapshot per event instead of the full history, and avoids the data race since serialization happens on the collection thread before any concurrent access.
+5. **Snapshot list data race** - Resolved by the push model above: the snapshot is serialized on the collection thread immediately after capture, so the ObjC bridge queue never reads the ArrayList concurrently. If pull-based access is still needed (e.g. replaying history), protect `snapshots` with a mutex.
