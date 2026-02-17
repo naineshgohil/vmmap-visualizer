@@ -26,5 +26,14 @@ target 'VmmapVisualizer-macOS' do
 
   post_install do |installer|
     react_native_post_install(installer)
+
+    if ENV['RCT_NEW_ARCH_ENABLED'] != '1'
+      provider = File.join(__dir__, 'build', 'generated', 'ios', 'RCTThirdPartyComponentsProvider.mm')
+      if File.exist?(provider)
+        content = File.read(provider)
+        content.gsub!(/^\s*@"RN(SVG|CSafeArea).*\n/, '')
+        File.write(provider, content)
+      end
+    end
   end
 end
