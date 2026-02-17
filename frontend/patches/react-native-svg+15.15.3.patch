@@ -1,0 +1,18 @@
+diff --git a/node_modules/react-native-svg/apple/Elements/RNSVGSvgView.mm b/node_modules/react-native-svg/apple/Elements/RNSVGSvgView.mm
+index d03d5c0..bb25ec8 100644
+--- a/node_modules/react-native-svg/apple/Elements/RNSVGSvgView.mm
++++ b/node_modules/react-native-svg/apple/Elements/RNSVGSvgView.mm
+@@ -44,6 +44,13 @@ + (void)load
+   [super load];
+ }
+ 
++#if TARGET_OS_OSX
++- (BOOL)wantsUpdateLayer
++{
++  return NO;
++}
++#endif
++
+ - (instancetype)initWithFrame:(CGRect)frame
+ {
+   if (self = [super initWithFrame:frame]) {
