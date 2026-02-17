@@ -1,43 +1,45 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { NativeModules, NativeEventEmitter } from 'react-native';
+import type { Snapshot } from './types';
 
 const { VmmapCollectorModule } = NativeModules;
 const emitter = new NativeEventEmitter(VmmapCollectorModule);
 
-export interface Region {
-  type: string;
-  start: number;
-  end: number;
-  vsize: number;
-  rsize: number;
-}
+export function useCollector(pid: number | null, intervalMs: number) {
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
 
-export interface Snapshot {
-  timestamp: number;
-  regions: Region[];
-}
-
-export function useCollector() {
   useEffect(() => {
+    if (pid === null) {
+      return;
+    }
+
+    setSnapshots([]);
+
     (async () => {
       try {
-        await VmmapCollectorModule.create(25038, 1000);
+        await VmmapCollectorModule.create(pid, intervalMs);
         await VmmapCollectorModule.start();
       } catch (error) {
-        console.log('Collector error', error);
+        console.log('[vmmap:frontend]: collector create/start error\n', error);
       }
     })();
 
     return () => {
       VmmapCollectorModule.stop();
     };
-  }, []);
+  }, [pid, intervalMs]);
 
   useEffect(() => {
-    const { remove } = emitter.addListener('onSnapshot', snapshot => {
-      console.log('App: snapshot', snapshot);
-    });
+    const { remove } = emitter.addListener(
+      'onSnapshot',
+      (snapshot: Snapshot) => {
+        console.log('[vmmap:frontend]: onSnapshot\n', snapshot);
+        setSnapshots(prev => [...prev, snapshot]);
+      },
+    );
 
     return () => remove();
   }, []);
+
+  return snapshots;
 }
