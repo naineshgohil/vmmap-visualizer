@@ -8,7 +8,7 @@ Native macOS desktop application for visualizing process virtual memory over tim
 
 - **Core**: Zig (parser, collector) compiled as dynamic library with C ABI
 - **GUI**: React Native for macOS
-- **Visualization**: react-native-svg or react-native-skia
+- **Visualization**: react-native-svg
 - **Data collection**: Zig module spawns `vmmap` via `std.process.Child`
 - **Bridge**: Objective-C `RCTEventEmitter` loading Zig dylib via `dlopen`
 
@@ -22,16 +22,14 @@ vmmap-visualizer/
   # React Native app
   frontend/
     src/
-      App.tsx             # Root component (SafeAreaProvider + useCollector)
-      useCollector.ts     # Bridge to native module via NativeEventEmitter
-      screens/
-        Home.tsx          # Main screen with timeline (not yet implemented)
+      App.tsx             # Root component (dark background + Timeline)
+      useCollector.ts     # Bridge to native module, accumulates Snapshot[]
+      types.ts            # Region/Snapshot TypeScript interfaces
+      regionColors.ts     # Region type -> category -> hex color mapping
+      Timeline.tsx        # SVG timeline visualization (log-scale Y-axis)
       components/
-        Timeline.tsx      # Timeline visualization (not yet implemented)
         Controls.tsx      # PID input, start/stop (not yet implemented)
         RegionTooltip.tsx # Hover details (not yet implemented)
-      types/
-        index.ts          # TypeScript types (not yet implemented)
     macos/
       VmmapVisualizer-macOS/
         VmmapCollectorModule.m  # ObjC bridge (RCTEventEmitter + dlopen)
@@ -57,7 +55,7 @@ vmmap-visualizer/
 2. **Parser** - DONE
 3. **Collector** - DONE
 4. **Bridge** - DONE
-5. **Timeline View** - Not started
+5. **Timeline View** - DONE
 6. **Controls** - Not started
 
 ---
@@ -68,7 +66,7 @@ vmmap-visualizer/
 
 Initialized with `react-native-macos-init`. Running on React 19.1.0, react-native 0.81.2, react-native-macos 0.81.0.
 
-Dependencies: `react-native-safe-area-context`.
+Dependencies: `react-native-safe-area-context`, `react-native-svg`.
 
 ### Zig Native Module
 
@@ -180,28 +178,51 @@ Zig collection thread
 
 Key design: serialization happens on the collection thread before crossing to ObjC, avoiding concurrent access to the Zig ArrayList.
 
-## Phase 5: Timeline View - NOT STARTED
+## Phase 5: Timeline View - DONE
 
-### Component: Timeline.tsx
+### Types (`frontend/src/types.ts`)
 
-Using `react-native-svg` for rendering:
+Extracted `Region` and `Snapshot` interfaces from useCollector. Fixed field name mismatch: bridge sends `timestamp_ms`, previous interface had `timestamp`.
 
-- **X-axis**: Time (snapshot index)
-- **Y-axis**: Address space (log scale)
-- **Regions**: Horizontal bands spanning their lifetime
-- Key regions by `start_addr + end_addr + type` to track across snapshots
+### Color Classification (`frontend/src/regionColors.ts`)
 
-### Color coding by category
+Two-tier lookup for mapping region type strings to hex colors:
+1. Exact match map for known types (`__TEXT`, `Stack`, `mapped file`, etc.)
+2. Prefix rules for families (`MALLOC*` -> heap, `__OBJC*` -> data, `__AUTH*` -> data)
+3. Fallback: system (gray)
 
 | Category | Region Types                                  | Color              |
 | -------- | --------------------------------------------- | ------------------ |
 | Code     | `__TEXT`, `__LINKEDIT`                        | `#3b82f6` (Blue)   |
-| Data     | `__DATA`, `__DATA_CONST`, `__OBJC_*`          | `#22c55e` (Green)  |
+| Data     | `__DATA`, `__DATA_CONST`, `__DATA_DIRTY`, `__OBJC_*`, `__AUTH*` | `#22c55e` (Green)  |
 | Heap     | `MALLOC_*`                                    | `#f97316` (Orange) |
 | Stack    | `Stack`, `STACK GUARD`                        | `#ef4444` (Red)    |
 | Mapped   | `mapped file`                                 | `#a855f7` (Purple) |
 | Shared   | `shared memory`                               | `#06b6d4` (Cyan)   |
-| System   | `IOKit`, `CoreAnimation`, `Kernel Alloc Once` | `#6b7280` (Gray)   |
+| System   | Everything else                               | `#6b7280` (Gray)   |
+
+### useCollector Hook (`frontend/src/useCollector.ts`)
+
+- Accepts `pid: number` and `intervalMs: number` parameters (replaces hardcoded values)
+- Accumulates snapshots in `useState<Snapshot[]>` via `setSnapshots(prev => [...prev, snapshot])`
+- Resets snapshots to `[]` when pid or intervalMs changes
+- Returns `Snapshot[]` array
+
+### Timeline Component (`frontend/src/Timeline.tsx`)
+
+SVG visualization using `react-native-svg`:
+
+- **Region tracking**: `Map<string, TrackedRegion>` keyed by `${start}-${end}-${type}`. Each entry tracks `firstSeen`/`lastSeen` snapshot index. Memoized with `useMemo`.
+- **Log-scale Y-axis**: `Math.log2(address)` mapped to pixel position. Auto-scales from data (scans min/max log2 addresses across all tracked regions).
+- **SVG rendering**: Each tracked region becomes a `<Rect>` with x/width from snapshot indices, y/height from log-scale address mapping, fill from `colorForType()`, opacity 0.7.
+- **Empty state**: Returns null when no snapshots (dark background shows through).
+
+### App Component (`frontend/src/App.tsx`)
+
+- Removed NewAppScreen template, StatusBar, useColorScheme, SafeAreaProvider, AppContent
+- Calls `useCollector(PID, INTERVAL_MS)` with hardcoded constants (PID=25038, interval=1000ms)
+- Uses `useWindowDimensions()` for full-window SVG viewport
+- Dark background (`#1a1a2e`) so region colors pop
 
 ## Phase 6: Controls - NOT STARTED
 
@@ -248,7 +269,7 @@ cd frontend && yarn macos
 ## Challenges
 
 1. **Zig to React Native bridge** - RESOLVED. ObjC `RCTEventEmitter` loads Zig dylib via `dlopen`. C function pointer callback bridges from Zig thread to ObjC event emitter.
-2. **Log scale rendering** - Address space spans ~48 bits; need careful scaling for visualization.
+2. **Log scale rendering** - RESOLVED. `Math.log2(address)` with auto-scaling from min/max across all tracked regions. Typical span is ~15 log2 units (bits 32-47).
 3. **Performance** - Many regions (1000+) may need virtualization or canvas fallback.
 4. **Real-time updates** - RESOLVED. Push-based delivery via `on_snapshot` callback. Collection thread serializes each snapshot to a CSnapshot immediately after capture, then invokes the ObjC callback which emits an `onSnapshot` event to JS. One snapshot per event, no polling, no full-history serialization.
 5. **Snapshot list data race** - RESOLVED. Serialization happens on the collection thread before any cross-thread access. The ObjC bridge queue never reads the ArrayList directly.
