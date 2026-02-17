@@ -6,10 +6,11 @@ Native macOS desktop application for visualizing process virtual memory over tim
 
 ## Tech Stack
 
-- **Core**: Zig (parser, collector) compiled as native module
+- **Core**: Zig (parser, collector) compiled as dynamic library with C ABI
 - **GUI**: React Native for macOS
 - **Visualization**: react-native-svg or react-native-skia
 - **Data collection**: Zig module spawns `vmmap` via `std.process.Child`
+- **Bridge**: Objective-C `RCTEventEmitter` loading Zig dylib via `dlopen`
 
 ### Future
 - Native AppKit via Zig ObjC interop (for learning/performance)
@@ -19,106 +20,67 @@ Native macOS desktop application for visualizing process virtual memory over tim
 ```
 vmmap-visualizer/
   # React Native app
-  App.tsx             # Root component
-  src/
-    screens/
-      Home.tsx        # Main screen with timeline
-    components/
-      Timeline.tsx    # Timeline visualization (SVG)
-      Controls.tsx    # PID input, start/stop
-      RegionTooltip.tsx
-    hooks/
-      useCollector.ts # Bridge to native module
-    types/
-      index.ts        # TypeScript types
+  frontend/
+    src/
+      App.tsx             # Root component (SafeAreaProvider + useCollector)
+      useCollector.ts     # Bridge to native module via NativeEventEmitter
+      screens/
+        Home.tsx          # Main screen with timeline (not yet implemented)
+      components/
+        Timeline.tsx      # Timeline visualization (not yet implemented)
+        Controls.tsx      # PID input, start/stop (not yet implemented)
+        RegionTooltip.tsx # Hover details (not yet implemented)
+      types/
+        index.ts          # TypeScript types (not yet implemented)
+    macos/
+      VmmapVisualizer-macOS/
+        VmmapCollectorModule.m  # ObjC bridge (RCTEventEmitter + dlopen)
+        AppDelegate.mm          # React Native macOS entry point
+    package.json
+    metro.config.js
 
   # Zig native module
-  native/
-    build.zig
+  collector/
+    build.zig             # Builds libvmmap_collector.dylib
     src/
-      main.zig        # C ABI exports for React Native
-      collector.zig   # Spawns vmmap, collects snapshots
-      parser.zig      # vmmap output parser
-      types.zig       # Data structures
-
-  # React Native config
-  package.json
-  metro.config.js
-  macos/              # React Native macOS target
+      main.zig            # C ABI exports + CResult/CRegion/CSnapshot structs
+      collector.zig       # Background thread, spawns vmmap, push via callback
+      parser.zig          # vmmap output parser (full format support)
+      types.zig           # Region, Snapshot, Permissions, SharingMode
 ```
 
-## Phase 1: Project Setup
+## Implementation Status
+
+### v1 (Core)
+
+1. **Project setup** - DONE
+2. **Parser** - DONE
+3. **Collector** - DONE
+4. **Bridge** - DONE
+5. **Timeline View** - Not started
+6. **Controls** - Not started
+
+---
+
+## Phase 1: Project Setup - DONE
 
 ### React Native macOS
 
-```bash
-npx react-native init VmmapVisualizer
-cd VmmapVisualizer
-npx react-native-macos-init
-```
+Initialized with `react-native-macos-init`. Running on React 19.1.0, react-native 0.81.2, react-native-macos 0.81.0.
 
-Dependencies:
-- `react-native-svg` - For timeline rendering
-- Custom native module for Zig integration
+Dependencies: `react-native-safe-area-context`.
 
 ### Zig Native Module
 
-Compile Zig as a dynamic library with C ABI exports:
+Compiles as a dynamic library (`libvmmap_collector.dylib`) with C ABI exports. Built with `zig build -Doptimize=ReleaseFast`. Links libc, uses dynamic linkage.
 
-```zig
-// native/src/main.zig
-export fn collector_start(pid: c_int, interval_ms: c_uint) callconv(.C) *Collector { ... }
-export fn collector_stop(collector: *Collector) callconv(.C) void { ... }
-export fn collector_get_snapshots(collector: *Collector) callconv(.C) [*]Snapshot { ... }
-```
+The dylib is copied into the macOS app bundle via an Xcode build phase so the ObjC bridge can load it at runtime.
 
-Build as `.dylib`:
-```bash
-zig build -Doptimize=ReleaseFast
-# Outputs: zig-out/lib/libvmmap_collector.dylib
-```
+## Phase 2: Parser (Zig) - DONE
 
-Bridge to React Native via a native module wrapper in Objective-C/Swift.
+**File**: `collector/src/parser.zig`
 
-## Phase 2: Data Collector (Zig)
-
-**File**: `src/collector.zig`
-
-Spawns `vmmap` as a child process and captures output:
-
-```zig
-const Collector = struct {
-    pid: std.posix.pid_t,
-    interval_ms: u32,
-    snapshots: std.ArrayList(Snapshot),
-    running: std.atomic.Value(bool),
-
-    pub fn start(self: *Collector) !void {
-        while (self.running.load(.acquire)) {
-            const snapshot = try self.captureSnapshot();
-            try self.snapshots.append(snapshot);
-            std.time.sleep(self.interval_ms * std.time.ns_per_ms);
-        }
-    }
-
-    fn captureSnapshot(self: *Collector) !Snapshot {
-        var child = std.process.Child.init(.{
-            .argv = &.{ "vmmap", self.pid_str },
-        });
-        // ... capture stdout, parse, return Snapshot
-    }
-};
-```
-
-Features:
-- Run in background thread while UI remains responsive
-- Configurable interval (default 1s)
-- Stop/start controls from UI
-- Live updates to timeline as snapshots arrive
-
-## Phase 3: Parser (Zig)
-
-Parse vmmap output to extract per-region data:
+Parses vmmap output line-by-line, extracting:
 
 | Field             | Example                           |
 | ----------------- | --------------------------------- |
@@ -126,11 +88,16 @@ Parse vmmap output to extract per-region data:
 | Start/End address | `100484000-100f3c000` (hex)       |
 | Virtual size      | `10.7M`                           |
 | Resident size     | `7904K`                           |
-| Permissions       | `r-x/r-x`                         |
-| Sharing mode      | `COW`, `PRV`, `SHM`               |
+| Dirty size        | `512K`                            |
+| Swap size         | `0K`                              |
+| Permissions       | `r-x/rwx`                         |
+| Sharing mode      | `COW`, `PRV`, `SHM`, `NUL`, `ALI`, `S/A` |
 | Detail            | `/path/to/binary`                 |
 
-**Data structures**:
+Handles multi-word region types, variable whitespace, bracketed size fields with K/M/G multipliers and float support. Invalid lines are skipped gracefully.
+
+**Data structures** (`collector/src/types.zig`):
+
 ```zig
 const Region = struct {
     region_type: []const u8,
@@ -138,57 +105,91 @@ const Region = struct {
     end_addr: u64,
     virtual_size: u64,
     resident_size: u64,
-    permissions: Permissions,
+    dirty_size: u64,
+    swap_size: u64,
+    current_perm: Permissions,
+    max_perm: Permissions,
     sharing_mode: SharingMode,
     detail: ?[]const u8,
 };
 
 const Snapshot = struct {
-    timestamp: f64,
+    timestamp_ms: i64,
     regions: []Region,
+    allocator: std.mem.Allocator,
 };
 ```
 
-**Region tracking**:
-- Key regions by `start_addr + end_addr + type`
-- Track first seen, last seen, size changes across snapshots
+## Phase 3: Collector (Zig) - DONE
 
-## Phase 4: Timeline View (React Native)
+**File**: `collector/src/collector.zig`
+
+Background thread spawns `vmmap <pid>` at a configurable interval, reads stdout (up to 10MB), parses with the parser, appends the snapshot to an ArrayList, and invokes an `on_snapshot` callback.
+
+- `start()` spawns a background thread with atomic guard against double-start
+- `stop()` sets atomic bool to false, joins the thread (blocks until current capture finishes)
+- `deinit()` stops collection and frees all snapshot data
+- Errors from individual captures are logged but don't kill the loop
+
+## Phase 4: Bridge (Zig C ABI + ObjC) - DONE
+
+### Zig C ABI (`collector/src/main.zig`)
+
+Exported functions:
+
+```
+vmmap_collector_create(pid, interval_ms, callback) -> CResult
+vmmap_collector_start(collector) -> CResult
+vmmap_collector_stop(collector)
+vmmap_collector_destroy(collector)
+vmmap_collector_snapshot_count(collector) -> count
+vmmap_collector_push_snapshot(snapshot) -> CSnapshotResult
+vmmap_free_string(ptr)
+```
+
+C-compatible structs (`CResult`, `CRegion`, `CSnapshot`) flatten Zig types for the ABI boundary. `push_snapshot` converts a Zig Snapshot to a heap-allocated CSnapshot with null-terminated string copies.
+
+### ObjC Bridge (`frontend/macos/.../VmmapCollectorModule.m`)
+
+- Extends `RCTEventEmitter` for push-based events to JS
+- Loads `libvmmap_collector.dylib` at init via `dlopen`/`dlsym`
+- Resolves function pointers: create, destroy, start, stop, count, freeString
+- `onSnapshotCallback` (C function) converts `CSnapshot*` to `NSDictionary` and emits `onSnapshot` event via the shared `RCTEventEmitter` instance
+- Exported methods: `create(pid, interval, promise)`, `start(promise)`, `stop()`, `getSnapshots(promise)` (legacy, kept for compatibility)
+
+### JS Hook (`frontend/src/useCollector.ts`)
+
+- Creates collector with hardcoded PID and 1000ms interval (test mode)
+- Listens for `onSnapshot` events via `NativeEventEmitter`
+- Logs snapshots to console
+- Cleanup: stops collector on unmount
+
+### Data Flow
+
+```
+Zig collection thread
+  vmmap <pid> -> parse -> Snapshot struct
+  -> on_snapshot callback
+    -> main.zig converts to CSnapshot
+      -> ObjC onSnapshotCallback()
+        -> NSDictionary { timestamp_ms, regions[] }
+          -> sendEventWithName:@"onSnapshot"
+            -> NativeEventEmitter in JS
+              -> useCollector listener
+```
+
+Key design: serialization happens on the collection thread before crossing to ObjC, avoiding concurrent access to the Zig ArrayList.
+
+## Phase 5: Timeline View - NOT STARTED
 
 ### Component: Timeline.tsx
 
 Using `react-native-svg` for rendering:
 
-```tsx
-import Svg, { Rect, G } from 'react-native-svg';
-
-function Timeline({ snapshots, width, height }) {
-  const yScale = d3.scaleLog()
-    .domain([minAddr, maxAddr])
-    .range([height, 0]);
-
-  return (
-    <Svg width={width} height={height}>
-      {regions.map(region => (
-        <Rect
-          key={region.id}
-          x={xScale(region.firstSeen)}
-          y={yScale(region.endAddr)}
-          width={xScale(region.lastSeen) - xScale(region.firstSeen)}
-          height={yScale(region.startAddr) - yScale(region.endAddr)}
-          fill={categoryColor(region.type)}
-        />
-      ))}
-    </Svg>
-  );
-}
-```
-
-### Layout
-
 - **X-axis**: Time (snapshot index)
 - **Y-axis**: Address space (log scale)
 - **Regions**: Horizontal bands spanning their lifetime
+- Key regions by `start_addr + end_addr + type` to track across snapshots
 
 ### Color coding by category
 
@@ -202,23 +203,19 @@ function Timeline({ snapshots, width, height }) {
 | Shared   | `shared memory`                               | `#06b6d4` (Cyan)   |
 | System   | `IOKit`, `CoreAnimation`, `Kernel Alloc Once` | `#6b7280` (Gray)   |
 
-## Phase 5: Interactivity
+## Phase 6: Controls - NOT STARTED
 
-- **Touch/click handling**: `onPress` on SVG elements
-- **Tooltips**: Custom `RegionTooltip` component positioned near selection
-- **Filters**: Toggle buttons for region categories (Pressable components)
-- **Gestures**: Pinch to zoom, pan with react-native-gesture-handler
+- PID input field
+- Start/stop button
+- Interval configuration
+- Replace hardcoded PID in useCollector with user input
 
-## Implementation Order
+## Phase 7: Interactivity - NOT STARTED
 
-### v1 (Core)
-
-1. **Project setup** - React Native macOS + Zig native module scaffold
-2. **Parser** - vmmap output parsing in Zig
-3. **Collector** - Spawn vmmap, capture snapshots in background thread
-4. **Bridge** - Objective-C wrapper exposing Zig to React Native
-5. **Timeline View** - react-native-svg rendering
-6. **Controls** - PID input, start/stop collection
+- Touch/click handling on SVG elements
+- Tooltips: custom `RegionTooltip` component positioned near selection
+- Filters: toggle buttons for region categories
+- Gestures: pinch to zoom, pan with react-native-gesture-handler
 
 ### v2 (Polish)
 
@@ -232,13 +229,13 @@ function Timeline({ snapshots, width, height }) {
 
 ```bash
 # Build Zig native module
-cd native && zig build -Doptimize=ReleaseFast
+cd collector && zig build -Doptimize=ReleaseFast
 
 # Install React Native dependencies
-yarn install
+cd frontend && yarn install
 
 # Run macOS app
-yarn macos
+cd frontend && yarn macos
 ```
 
 ## References
@@ -250,8 +247,8 @@ yarn macos
 
 ## Challenges
 
-1. **Zig to React Native bridge** - Need Objective-C wrapper to expose Zig functions as native module
-2. **Log scale rendering** - Address space spans ~48 bits; need careful scaling for visualization
-3. **Performance** - Many regions (1000+) may need virtualization or canvas fallback
-4. **Real-time updates** - Switch from pull-based polling (`getSnapshots`) to push-based events (`RCTEventEmitter`). Collection thread serializes each snapshot to JSON immediately after capture, then signals the ObjC module which emits an `onSnapshot` event to JS. This eliminates polling, sends one snapshot per event instead of the full history, and avoids the data race since serialization happens on the collection thread before any concurrent access.
-5. **Snapshot list data race** - Resolved by the push model above: the snapshot is serialized on the collection thread immediately after capture, so the ObjC bridge queue never reads the ArrayList concurrently. If pull-based access is still needed (e.g. replaying history), protect `snapshots` with a mutex.
+1. **Zig to React Native bridge** - RESOLVED. ObjC `RCTEventEmitter` loads Zig dylib via `dlopen`. C function pointer callback bridges from Zig thread to ObjC event emitter.
+2. **Log scale rendering** - Address space spans ~48 bits; need careful scaling for visualization.
+3. **Performance** - Many regions (1000+) may need virtualization or canvas fallback.
+4. **Real-time updates** - RESOLVED. Push-based delivery via `on_snapshot` callback. Collection thread serializes each snapshot to a CSnapshot immediately after capture, then invokes the ObjC callback which emits an `onSnapshot` event to JS. One snapshot per event, no polling, no full-history serialization.
+5. **Snapshot list data race** - RESOLVED. Serialization happens on the collection thread before any cross-thread access. The ObjC bridge queue never reads the ArrayList directly.
