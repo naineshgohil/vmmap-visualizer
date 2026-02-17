@@ -52,3 +52,6 @@ yarn-error.log
 zig-cache/
 zig-out/
 *.dylib
+
+# Chat logs
+chats/
