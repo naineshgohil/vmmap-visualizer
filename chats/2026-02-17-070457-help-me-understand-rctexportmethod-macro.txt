@@ -1,0 +1,1819 @@
+
+╭─── Claude Code v2.1.41 ──────────────────────────────────────────────────────╮
+│                                      │ Tips for getting started              │
+│          Welcome back Neal!          │ Run /init to create a CLAUDE.md file… │
+│                                      │ ───────────────────────────────────── │
+│                ▐▛███▜▌               │ Recent activity                       │
+│               ▝▜█████▛▘              │ No recent activity                    │
+│                 ▘▘ ▝▝                │                                       │
+│                                      │                                       │
+│        Opus 4.6 · Claude Max         │                                       │
+│   ~/Work/vmmap Visualizer/frontend   │                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+❯ Help me understand RCT_EXPORT_METHOD macro 
+
+⏺ Let me check how it's used in your project first.
+
+⏺ Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ Here's how RCT_EXPORT_METHOD works, using your module as the concrete example.
+
+  What it does
+
+  It makes an Objective-C method callable from JavaScript. When you write:
+
+  RCT_EXPORT_METHOD(start) {
+    if (_collector && _startFn) {
+      _startFn(_collector);
+    }
+  }
+
+  JavaScript can call NativeModules.VmmapCollectorModule.start().
+
+  How it actually works (the macro expansion)
+
+  RCT_EXPORT_METHOD is a macro that does two things:
+
+  1. Generates a hidden "registration" method with a special name that React
+  Native's module scanner discovers at startup via the Objective-C runtime.
+  2. Defines the actual method you wrote.
+
+  Roughly, RCT_EXPORT_METHOD(start) expands to something like:
+
+  // 1. Hidden class method that returns metadata about this method
+  + (NSArray *)__rct_export__start_0 {
+    return @[@"", @"start"];  // [js_name, objc_selector]
+  }
+
+  // 2. Your actual instance method
+  - (void)start {
+    // your code
+  }
+
+  The __rct_export__ prefix is the key. At app startup, React Native uses the
+  Objective-C runtime to enumerate all methods on your class. It finds every
+  method starting with __rct_export__, calls each one to get the selector
+  string, and builds a lookup table: JS method name -> ObjC selector.
+
+  The registration flow
+
+  App launches
+    -> RCTBridge initializes
+      -> Scans all classes conforming to <RCTBridgeModule>
+        -> For each class, finds all +__rct_export__* methods (via objc runtime)
+          -> Calls them to get selector strings
+            -> Builds JS -> ObjC method dispatch table
+
+
+  This is why RCT_EXPORT_MODULE() (line 34) matters too -- it implements + 
+  (NSString *)moduleName and marks the class for discovery. Without it, the
+  bridge never scans the class.
+
+  The four patterns in your module
+
+  Macro usage: RCT_EXPORT_METHOD(create:(int)pid interval:(int)intervalMs)
+  JS call: create(pid, intervalMs)
+  Notes: Multiple args: ObjC selector parts become positional JS args
+  ────────────────────────────────────────
+  Macro usage: RCT_EXPORT_METHOD(start)
+  JS call: start()
+  Notes: No args, fire-and-forget
+  ────────────────────────────────────────
+  Macro usage: RCT_EXPORT_METHOD(stop)
+  JS call: stop()
+  Notes: Same pattern
+  ────────────────────────────────────────
+  Macro usage: RCT_EXPORT_METHOD(getSnapshots:(RCTPromiseResolveBlock)resolve 
+    reject:(RCTPromiseRejectBlock)reject)
+  JS call: await getSnapshots()
+  Notes: Promise args are hidden from JS -- makes it async automatically
+
+  The promise pattern
+
+  The last one is worth noting. When the last two parameters are
+  RCTPromiseResolveBlock and RCTPromiseRejectBlock, React Native automatically
+  makes the JS method return a Promise. JS never sees those parameters:
+
+  // Objective-C has resolve/reject params, but JS just sees:
+  const snapshots = await NativeModules.VmmapCollectorModule.getSnapshots();
+
+  Threading
+
+  By default, methods run on a background serial queue (one per module). They do
+   not run on the main thread. If you needed main thread execution (e.g., for UI
+   work), you'd override - (dispatch_queue_t)methodQueue to return
+  dispatch_get_main_queue(). For your module this doesn't matter since you're
+  calling into Zig functions, not UIKit.
+
+  Why this design?
+
+  The Objective-C runtime has full introspection -- you can list all methods on
+  a class, get their names, and call them dynamically. React Native exploits
+  this to avoid any manual registration step. You just drop RCT_EXPORT_METHOD on
+   a method and it's automatically available to JS. The macro hides the
+  boilerplate of creating the metadata method that the bridge scanner looks for.
+
+✻ Worked for 32s
+
+❯ What would be the syntax then if I want to pass two int arguments to      
+  getSnapshots()?                                                           
+
+⏺ RCT_EXPORT_METHOD(getSnapshots:(int)startIndex count:(int)count
+  resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject)
+  {
+    // ...
+  }
+
+  The ObjC selector is getSnapshots:count:resolve:reject:, but since the promise
+   params are hidden from JS, the call becomes:
+
+  const snapshots = await NativeModules.VmmapCollectorModule.getSnapshots(0,
+  10);
+
+  The general pattern is: your args first (each with a label and type), then
+  resolve: and reject: last. The labels (count:, resolve:, reject:) are the ObjC
+   selector parts -- JS doesn't see them, it just gets positional args with the
+  promise params stripped off the end.
+
+❯ What does an identifier needs to be repeated? count:(int)count 
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ Why does an identifier needs to be repeated? count:(int)count 
+
+⏺ That's Objective-C method syntax. The two counts serve different roles:
+
+  count:(int)count
+    ^          ^
+    |          └── parameter name (used inside the method body)
+    └── selector label (part of the method name, visible to callers)
+
+
+  They don't have to match. This is equally valid:
+
+  RCT_EXPORT_METHOD(getSnapshots:(int)startIndex count:(int)n
+  resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject)
+  {
+    // use `n` here, not `count`
+  }
+
+  The selector is still getSnapshots:count:resolve:reject: -- the label count:
+  is unchanged. But inside the body you'd refer to n.
+
+  It's the same distinction as in Swift, which inherited this from ObjC:
+
+  func getSnapshots(startIndex: Int, count n: Int)
+  //                                 ^     ^
+  //                              label   param name
+
+  People just tend to use the same word for both when there's no reason to
+  differentiate.
+
+❯ Which arguments does reject expects? 
+
+⏺ Three arguments:
+
+  reject(@"ERROR_CODE", @"Human-readable message", nsError);
+
+  ┌──────────┬────────────┬───────────────────────────────────────┐
+  │ Position │    Type    │                Purpose                │
+  ├──────────┼────────────┼───────────────────────────────────────┤
+  │ 1        │ NSString * │ Error code (e.g. @"NO_COLLECTOR")     │
+  ├──────────┼────────────┼───────────────────────────────────────┤
+  │ 2        │ NSString * │ User-facing message                   │
+  ├──────────┼────────────┼───────────────────────────────────────┤
+  │ 3        │ NSError *  │ Optional underlying error, can be nil │
+  └──────────┴────────────┴───────────────────────────────────────┘
+
+  So in your module it would look like:
+
+  reject(@"NO_DATA", @"Collector not initialized", nil);
+
+  On the JS side that becomes a rejected promise, and the error object has
+  .code, .message, and .nativeStackIOS properties.
+
+❯ What should be the correct return value from Zig functions? return codes  
+  or null/not-null? So that the return values could be used for proper      
+  error handling in the app.                                                
+
+⏺ Let me check what your Zig exports currently return.
+
+⏺ Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+⏺ Your current approach is already good for C FFI. You're using the right
+  pattern for each case:
+
+  Function: create
+  Returns: ?*Collector
+  Meaning: null = failed, non-null = success
+  ────────────────────────────────────────
+  Function: start
+  Returns: c_int
+  Meaning: 0 = success, -1 = failed
+  ────────────────────────────────────────
+  Function: get_snapshots_json
+  Returns: ?[*:0]u8
+  Meaning: null = failed, non-null = data
+  ────────────────────────────────────────
+  Function: destroy / stop / free_string
+  Returns: void
+  Meaning: Can't fail meaningfully
+
+  This is the right split. The rule of thumb for C ABI:
+
+  - Returning a pointer -> use nullable (?*T). Null means failure. This is
+  idiomatic C.
+  - Returning status -> use c_int. 0 = success, negative = error. This is POSIX
+  convention.
+  - Cleanup functions -> return void. Accept null gracefully (no-op).
+
+  The one thing you're missing is distinguishing error causes. Right now start
+  returns -1 for both "null collector" and "thread spawn failed", and the ObjC
+  side can't tell the user why it failed.
+
+  Two options, in order of complexity:
+
+  Option 1: Error codes (simple, sufficient for now)
+
+  Define distinct negative values:
+
+  export fn vmmap_collector_start(collector: ?*Collector) callconv(.c) c_int {
+      const c = collector orelse return -1; // null collector
+      c.start() catch return -2;            // thread spawn failed
+      return 0;                             // success
+  }
+
+  Then on the ObjC side:
+
+  int result = _startFn(_collector);
+  if (result == -1) reject(@"NULL_COLLECTOR", @"Collector not initialized",
+  nil);
+  if (result == -2) reject(@"START_FAILED", @"Failed to spawn collection 
+  thread", nil);
+
+  Option 2: Error string out-parameter (richer, more work)
+
+  export fn vmmap_collector_start(
+      collector: ?*Collector,
+      err_out: ?*[*:0]const u8,
+  ) callconv(.c) c_int {
+      const c = collector orelse {
+          if (err_out) |e| e.* = "collector is null";
+          return -1;
+      };
+      c.start() catch {
+          if (err_out) |e| e.* = "failed to spawn thread";
+          return -2;
+      };
+      return 0;
+  }
+
+  This is more flexible but adds complexity on both sides. For a tool like this
+  with a small API surface, option 1 is plenty. You only have a few failure
+  modes, and mapping integer codes to reject messages in ObjC is
+  straightforward.
+
+  One bug to fix regardless -- start currently returns -1 even on success (line
+  38 runs after the if body when collector is non-null and start() succeeds):
+
+  // Current (buggy)
+  if (collector) |c| {
+      c.start() catch return -1;
+  }
+  return -1;  // <-- always reached on success too
+
+  // Fixed
+  const c = collector orelse return -1;
+  c.start() catch return -2;
+  return 0;
+
+✻ Cooked for 30s
+
+❯ How can I write this differently? -     switch (_startFn(_collector)) {   
+        case 0:                                                             
+          resolve(@"");                                                     
+          break;                                                            
+                                                                            
+        case -1:                                                            
+          reject(@"NULL_COLLECTOR", @"Collector not initialized", nil);     
+          break;                                                            
+                                                                            
+        case -2:                                                            
+          reject(@"START_FAILED", @"Failed to spawn collection thread",     
+  nil);                                                                     
+          break;                                                            
+      }                                                                     
+                                                                            
+
+⏺ if/else if removes the break noise:
+
+  int result = _startFn(_collector);
+
+  if (result == 0) {
+      resolve(@"");
+  } else if (result == -1) {
+      reject(@"NULL_COLLECTOR", @"Collector not initialized", nil);
+  } else {
+      reject(@"START_FAILED", @"Failed to spawn collection thread", nil);
+  }
+
+  The switch is fine too though -- it's mostly a style preference. The if chain
+  is just less ceremony for 2-3 cases.
+
+❯ How else? 
+
+⏺ Early return to handle errors first, keeping the happy path at the end:
+
+  int result = _startFn(_collector);
+
+  if (result == -1) {
+      reject(@"NULL_COLLECTOR", @"Collector not initialized", nil);
+      return;
+  }
+  if (result == -2) {
+      reject(@"START_FAILED", @"Failed to spawn collection thread", nil);
+      return;
+  }
+
+  resolve(@"");
+
+❯ How else? 
+
+⏺ Move the error string into Zig so ObjC doesn't map codes at all:
+
+  export fn vmmap_collector_start(
+      collector: ?*Collector,
+      err_out: ?*[*:0]const u8,
+  ) callconv(.c) bool {
+      const c = collector orelse {
+          if (err_out) |e| e.* = "Collector not initialized";
+          return false;
+      };
+      c.start() catch {
+          if (err_out) |e| e.* = "Failed to spawn collection thread";
+          return false;
+      };
+      return true;
+  }
+
+  Then ObjC becomes:
+
+  const char *err = NULL;
+  if (_startFn(_collector, &err)) {
+      resolve(@"");
+  } else {
+      reject(@"START_FAILED", [NSString stringWithUTF8String:err], nil);
+  }
+
+  No switch, no if chain, no code mapping. The error knowledge stays in Zig
+  where the failures actually happen.
+
+❯ Instead of writing to an error pointer, I want to return it. 
+
+⏺ Then return a struct:
+
+  const Result = extern struct {
+      ok: bool,
+      error_msg: ?[*:0]const u8,
+  };
+
+  export fn vmmap_collector_start(collector: ?*Collector) callconv(.c) Result {
+      const c = collector orelse return .{ .ok = false, .error_msg = "Collector
+  not initialized" };
+      c.start() catch return .{ .ok = false, .error_msg = "Failed to spawn
+  collection thread" };
+      return .{ .ok = true, .error_msg = null };
+  }
+
+  ObjC side:
+
+  typedef struct {
+      bool ok;
+      const char *error_msg;
+  } Result;
+
+  // ...
+
+  Result r = _startFn(_collector);
+  if (r.ok) {
+      resolve(@"");
+  } else {
+      reject(@"START_FAILED", [NSString stringWithUTF8String:r.error_msg], nil);
+  }
+
+  extern struct ensures C-compatible layout so the struct passes cleanly across
+  the ABI boundary.
+
+❯ How can I mark error_msg as an optional so that I don't have to pass a    
+  null value on the success?                                                
+
+⏺ It already is optional -- ?[*:0]const u8 is Zig's optional pointer. The thing
+  is, you still need to initialize struct fields explicitly in Zig. There's no
+  implicit default.
+
+  You can give it a default value instead:
+
+  const Result = extern struct {
+      ok: bool,
+      error_msg: ?[*:0]const u8 = null,
+  };
+
+  Then:
+
+  return .{ .ok = true };
+
+❯ Check collector module - "Initializing 'Result' with an expression of     
+  incompatible type 'int'"                                                  
+
+⏺ Your function pointer typedef still declares the old int return type. Update
+  it in VmmapCollectorModule.m:
+
+  // Old
+  typedef int (*StartFn)(int*);
+
+  // New
+  typedef struct {
+      bool ok;
+      const char *error_msg;
+  } Result;
+
+  typedef Result (*StartFn)(void*);
+
+  The parameter type is also wrong -- it takes void* (the collector pointer),
+  not int*.
+
+❯ Update method descriptions in main.zig 
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Only start has a stale doc comment. The rest are accurate.
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/main.zig)
+  ⎿  Added 4 lines, removed 3 lines
+      33      }
+      34  }
+      35  
+      36 -/// Spawn the background collection thread. Returns -1 on failu
+         -re (thread spawn                                               
+      37 -/// error or null collector). The thread loops: spawn vmmap, pa
+         -rse, append snapshot,                                          
+      38 -/// sleep interval_ms, repeat — until vmmap_collector_stop is c
+         -alled.                                                         
+      36 +/// Spawn the background collection thread. Returns a Result st
+         +ruct: ok=true on                                               
+      37 +/// success, ok=false with error_msg on failure (null collector
+         + or thread spawn error).                                       
+      38 +/// The thread loops: spawn vmmap, parse, append snapshot, slee
+         +p interval_ms, repeat                                          
+      39 +/// — until vmmap_collector_stop is called.                    
+      40  export fn vmmap_collector_start(collector: ?*Collector) callcon
+          v(.c) Result {
+      41      std.debug.print("[vmmap] start\n", .{});
+      42      const c = collector orelse return .{
+
+⏺ Updated the start doc comment to reflect the Result return type. The other
+  function comments were already accurate.
+
+❯ Batch commit 
+
+⏺ Bash(cd "/Users/nainesh/Work/vmmap Visualizer" && git status)
+  ⎿  On branch main
+     Changes not staged for commit:
+       (use "git add <file>..." to update what will be committed)
+     … +8 lines (ctrl+o to expand)
+
+⏺ Bash(cd "/Users/nainesh/Work/vmmap Visualizer" && git diff)
+  ⎿  diff --git a/collector/src/main.zig b/collector/src/main.zig
+     index 3fac78f..58b54b9 100644
+     --- a/collector/src/main.zig
+     … +65 lines (ctrl+o to expand)
+
+⏺ Bash(cd "/Users/nainesh/Work/vmmap Visualizer" && git log --oneline -5)
+  ⎿  8349579 Add dev script, fix start script, update storyboard toolsVersi
+     on
+     b7fd47c Move App component to src/ directory
+     … +5 lines (ctrl+o to expand)
+
+⏺ Three files changed across two logical units: the Result struct for error
+  handling in Zig + ObjC, and the async/promise bridge updates in the hook. I'll
+   make separate commits per your preference.
+
+⏺ Bash(cd "/Users/nainesh/Work/vmmap Visualizer" && git add
+      collector/src/main.zig
+      frontend/macos/VmmapVisualizer-macOS/VmmapCollectorModule.m && git commit
+      -m "Return…)
+  ⎿  [main 872ddd5] Return Result struct from Zig start fn for structured e
+     rror handling
+      2 files changed, 43 insertions(+), 13 deletions(-)
+
+⏺ Bash(cd "/Users/nainesh/Work/vmmap Visualizer" && git add
+      frontend/src/useCollector.ts && git commit -m "Await create and start
+      calls in useCollector hook…)
+  ⎿  [main a554d51] Await create and start calls in useCollector hook
+      1 file changed, 8 insertions(+), 2 deletions(-)
+
+⏺ Bash(cd "/Users/nainesh/Work/vmmap Visualizer" && git status && git log
+      --oneline -4)
+  ⎿  On branch main
+     nothing to commit, working tree clean
+     a554d51 Await create and start calls in useCollector hook
+     … +5 lines (ctrl+o to expand)
+
+⏺ Two commits:
+
+  - 872ddd5 -- Result struct + ObjC bridge error handling (main.zig +
+  VmmapCollectorModule.m)
+  - a554d51 -- Async/await in useCollector hook (useCollector.ts)
+
+❯ Now, I want to update Result to return an object ref like Collector or    
+  bool.                                                                     
+
+⏺ Add a ref field for pointer results -- ok already serves as the bool:
+
+  const Result = extern struct {
+      ok: bool,
+      error_msg: ?[*:0]const u8 = null,
+      ref: ?*anyopaque = null,
+  };
+
+  Then create can return the collector through Result too:
+
+  // create: returns a pointer
+  return .{ .ok = true, .ref = collector };
+
+  // start: returns just ok/error
+  return .{ .ok = true };
+
+  ObjC side, cast ref back to void*:
+
+  Result r = _createFn(pid, intervalMs);
+  if (r.ok) {
+      _collector = r.ref;
+  }
+
+  This lets you use Result as the uniform return type for every exported
+  function. ok is your bool, ref is your pointer, both default to sane zero
+  values.
+
+❯ Is this correc? typedef struct {                                          
+    bool ok;                                                                
+    const char *error_msg;                                                  
+    void* ref;                                                              
+  } Result;                                                                 
+
+⏺ Yes, that's correct.
+
+❯ Now, I need to understand who is running the collector and how does the   
+  interactions between that and the React-Native app are maintained.        
+
+⏺ Let me trace the full flow.
+
+⏺ Read 2 files (ctrl+o to expand)
+
+⏺ Here's the full picture:
+
+  ┌─────────────────────────────────────────────────────────┐
+  │  React Native (JS thread)                               │
+  │                                                         │
+  │  useCollector()                                         │
+  │    mount  → create(700, 1000) → start()                 │
+  │    later  → getSnapshots()    → JSON.parse()            │
+  │    unmount→ stop()                                      │
+  │         │                                               │
+  │         │  NativeModules bridge (async dispatch)         │
+  ├─────────┼───────────────────────────────────────────────┤
+  │  ObjC bridge (serial background queue)                  │
+  │                                                         │
+  │  VmmapCollectorModule                                   │
+  │    create → dlsym'd Zig fn → heap-allocates Collector   │
+  │    start  → dlsym'd Zig fn → spawns Zig thread          │
+  │    stop   → dlsym'd Zig fn → joins Zig thread           │
+  │    getSnapshots → dlsym'd Zig fn → reads snapshot list  │
+  │         │                                               │
+  │         │  C ABI function calls (libvmmap_collector.dylib)
+  ├─────────┼───────────────────────────────────────────────┤
+  │  Zig (background thread)                                │
+  │                                                         │
+  │  collectionLoop:                                        │
+  │    while (running) {                                    │
+  │      spawn "vmmap 700" as child process                 │
+  │      read stdout → parser.parse() → Snapshot            │
+  │      append to snapshots ArrayList                      │
+  │      sleep 1000ms                                       │
+  │    }                                                    │
+  └─────────────────────────────────────────────────────────┘
+
+
+  Three threads are involved:
+
+  1. JS thread -- React runs here. Calls native methods through the bridge.
+  Never blocks.
+  2. ObjC module queue -- Each RCT_EXPORT_METHOD runs on a per-module serial
+  queue (not the main thread, not the JS thread). This is where
+  _startFn(_collector) actually executes. The promise resolve/reject callbacks
+  marshal results back to JS.
+  3. Zig collection thread -- Spawned by Collector.start() at collector.zig:48.
+  Runs collectionLoop independently: spawn vmmap, parse, append, sleep, repeat.
+  Communicates with the outside world through two things:
+    - running: atomic(bool) -- stop signal (written by ObjC thread via stop(),
+  read by Zig thread)
+    - snapshots: ArrayList -- data accumulator (written by Zig thread, read by
+  ObjC thread via getSnapshots)
+
+  The interaction pattern is pull-based. The Zig thread silently accumulates
+  snapshots in the background. JS calls getSnapshots() whenever it wants the
+  data. There's no push/callback from Zig to JS.
+
+  The data race concern: getSnapshots reads snapshots.items from the ObjC queue
+  while the Zig thread may be appending to it. ArrayList is not thread-safe.
+  Right now this works by luck -- if getSnapshots happens to run between sleeps,
+   the list isn't being mutated. But it's a real race condition. You'd
+  eventually want a mutex around snapshot access.
+
+❯ Add that data race concern to Plan file 
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Update(~/Work/vmmap Visualizer/PLAN.md)
+  ⎿  Added 1 line
+      254  2. **Log scale rendering** - Address space spans ~48 bits; nee
+           d careful scaling for visualization
+      255  3. **Performance** - Many regions (1000+) may need virtualizat
+           ion or canvas fallback
+      256  4. **Real-time updates** - Bridging snapshot data from Zig thr
+           ead to JS efficiently
+      257 +5. **Snapshot list data race** - `getSnapshots` reads `snapsho
+          +ts.items` from the ObjC bridge queue while the Zig collection 
+          +thread may be appending to it. `ArrayList` is not thread-safe.
+          + Needs a mutex around snapshot access in `Collector`.         
+
+⏺ Added as challenge #5 in PLAN.md:257.
+
+❯ Okay. So, I uninstalled Zig from my machine and restarted the app which   
+  still runs fine. What gives?                                              
+
+⏺ The Zig compiler is only needed at build time. Once libvmmap_collector.dylib
+  is compiled, it's a plain native binary -- no Zig runtime, no Zig dependency.
+
+  Your ObjC module loads it from the app bundle at runtime:
+
+  // VmmapCollectorModule.m:39
+  NSString *libPath = [[NSBundle mainBundle]
+  pathForResource:@"libvmmap_collector" ofType:@"dylib"];
+  _libHandle = dlopen([libPath UTF8String], RTLD_NOW);
+
+  That dylib is sitting inside VmmapVisualizer.app/Contents/Resources/ (or
+  wherever the Xcode build phase copies it). It's self-contained machine code.
+  dlopen loads it the same way macOS loads any .dylib -- no compiler involved.
+
+  Same reason you don't need Xcode installed to run a .app that was built with
+  Xcode, or a C compiler to run a binary compiled from C.
+
+❯ Okay, so then why did you referenced "Zig thread" above? It won't be Zig  
+  thread at the point, wouldn't it?                                         
+
+⏺ You're right. At runtime it's just a native thread -- a pthread spawned by
+  std.Thread.spawn, which calls pthread_create under the hood. There's nothing
+  "Zig" about it. It's the same kind of thread as if you'd written the code in
+  C.
+
+  I was using "Zig thread" loosely to mean "the thread spawned by code that was
+  written in Zig," to distinguish it from the JS thread and the ObjC module
+  queue. But that's sloppy -- at runtime they're all just pthreads.
+
+❯ Okay, then help me understand how thread works in a MacOS app 
+
+⏺ Every process on macOS gets one thread from the kernel at launch. After that,
+  any thread you create (however you create it) is a pthread -- that's the only
+  threading primitive the kernel provides.
+
+  The layers
+
+  ┌──────────────────────────────────────┐
+  │  Your code                           │
+  │  std.Thread.spawn / NSThread / async │
+  ├──────────────────────────────────────┤
+  │  Frameworks                          │
+  │  GCD (libdispatch) / NSOperationQueue│
+  ├──────────────────────────────────────┤
+  │  POSIX                               │
+  │  pthread_create                      │
+  ├──────────────────────────────────────┤
+  │  Kernel (XNU)                        │
+  │  Mach threads                        │
+  └──────────────────────────────────────┘
+
+
+  Everything above the kernel is just convenience wrappers. std.Thread.spawn,
+  NSThread, dispatch_async, std::thread -- they all end up calling
+  pthread_create, which asks the Mach kernel for a new thread.
+
+  The three threads in your app
+
+  1. Main thread
+
+  Created by the kernel when the process launches. In a macOS app, it runs the
+  run loop -- an infinite loop that waits for events (clicks, keypresses, window
+   resizes, timers) and dispatches them to handlers. AppKit requires all UI work
+   to happen here.
+
+  main() → NSApplicationMain() → [NSApp run] → run loop spins forever
+
+
+  If you block this thread, the app freezes -- beach ball.
+
+  2. React Native JS thread
+
+  React Native spawns a dedicated pthread for the JavaScript engine (JSC or
+  Hermes). Your JS code -- useCollector, useEffect, setState -- all runs here.
+  When JS calls a native module method, it serializes the call and dispatches it
+   to the module's queue.
+
+  This is why JS never blocks the UI. It's a separate thread.
+
+  3. Your collection thread
+
+  std.Thread.spawn → pthread_create. Runs collectionLoop, which spawns vmmap,
+  parses output, appends snapshots, sleeps, repeats. Completely independent --
+  no run loop, no event dispatch. Just a plain loop on a plain thread.
+
+  How they communicate
+
+  Threads don't directly call into each other. They share data through memory:
+
+  JS thread                ObjC module queue         Collection thread
+      │                         │                          │
+      │  bridge call            │                          │
+      ├────────────────────────►│                          │
+      │                         │  _startFn(_collector)    │
+      │                         ├─────────────────────────►│ (spawns thread)
+      │                         │                          │
+      │                         │                          │ loop: vmmap → parse
+      │                         │                          │       → append
+  snapshot
+      │                         │                          │       → sleep
+      │  getSnapshots()         │                          │
+      ├────────────────────────►│                          │
+      │                         │  read snapshots.items ←──┤ (shared memory)
+      │                         │                          │
+      │  ◄── resolve(json) ─────┤                          │
+
+
+  The ObjC module queue is a GCD serial queue -- Grand Central Dispatch. Instead
+   of creating a dedicated pthread per module, React Native gives each module a
+  dispatch queue. When JS calls start(), GCD pulls a thread from its pool, runs
+  your method, then returns the thread to the pool. Serial means only one method
+   runs at a time per module, so create and start never overlap.
+
+  Why this matters for your data race
+
+  The collection thread writes to snapshots continuously. When JS calls
+  getSnapshots, GCD runs that method on a pool thread, which reads snapshots.
+  Two different threads accessing the same ArrayList with no synchronization.
+  The atomic bool on running doesn't protect snapshots -- it only coordinates
+  the start/stop signal.
+
+❯ Can I see child threads in the activity monitor? 
+
+⏺ No. Activity Monitor shows processes, not threads.
+
+  But you can see them with Terminal tools:
+
+  # Thread count for a process
+  ps -M <pid>
+
+  # Or with top (shows thread count per process)
+  top -pid <pid>
+
+
+  ps -M will show each thread as a separate row under the process, with its own
+  CPU time and state.
+
+❯ What would be the efficient way to transmit data from the collector to    
+  the app?                                                                  
+
+⏺ Right now the flow has two inefficiencies:
+
+  1. Pull-based -- JS has to poll with getSnapshots() on some interval
+  2. Full dump every time -- serializes every snapshot accumulated, not just new
+   ones
+
+  Two changes that address both:
+
+  1. Push new snapshots via events (instead of polling)
+
+  React Native has RCTEventEmitter -- lets native code push events to JS without
+   JS asking.
+
+  Collection thread                ObjC module                    JS
+      │                               │                            │
+      │ append snapshot               │                            │
+      │ ──► signal ObjC ─────────────►│                            │
+      │                               │  sendEvent("onSnapshot",  │
+      │                               │    {json for 1 snapshot}) │
+      │                               │ ──────────────────────────►│
+      │                               │                            │ setState
+
+
+  The collection thread already knows when a new snapshot arrives -- it just
+  appended it. Instead of accumulating silently, it can notify the ObjC layer,
+  which emits an event to JS with just that one snapshot.
+
+  JS side becomes reactive:
+
+  useEffect(() => {
+    const sub = eventEmitter.addListener('onSnapshot', (snapshot) => {
+      setSnapshots(prev => [...prev, snapshot]);
+    });
+    return () => sub.remove();
+  }, []);
+
+  No polling. No fetching the full history. Each snapshot crosses the bridge
+  exactly once.
+
+  2. Send one snapshot at a time (instead of all)
+
+  This falls out naturally from the push model. But even if you kept pull-based,
+   you'd want a cursor:
+
+  export fn vmmap_collector_get_snapshot(collector: ?*Collector, index: c_uint)
+  callconv(.c) ?[*:0]u8 {
+      // serialize just snapshots[index]
+  }
+
+  JS tracks the last index it's seen, fetches one at a time.
+
+  What I'd recommend
+
+  Push via RCTEventEmitter. It eliminates polling, naturally sends one snapshot
+  at a time, and the collection thread controls the cadence (it already has the
+  interval). The JSON cost drops from "serialize N snapshots" to "serialize 1
+  snapshot" per tick.
+
+  The data race also becomes simpler to solve -- the ObjC callback serializes
+  the snapshot immediately on the collection thread before appending it to the
+  list, so there's no concurrent read/write on the ArrayList.
+
+  Want me to add this to the plan?
+
+❯ Yes, update Plan.md 
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Update(~/Work/vmmap Visualizer/PLAN.md)
+  ⎿  Added 2 lines, removed 2 lines
+      253  1. **Zig to React Native bridge** - Need Objective-C wrapper t
+           o expose Zig functions as native module
+      254  2. **Log scale rendering** - Address space spans ~48 bits; nee
+           d careful scaling for visualization
+      255  3. **Performance** - Many regions (1000+) may need virtualizat
+           ion or canvas fallback
+      256 -4. **Real-time updates** - Bridging snapshot data from Zig thr
+          -ead to JS efficiently                                         
+      257 -5. **Snapshot list data race** - `getSnapshots` reads `snapsho
+          -ts.items` from the ObjC bridge queue while the Zig collection 
+          -thread may be appending to it. `ArrayList` is not thread-safe.
+          - Needs a mutex around snapshot access in `Collector`.         
+      256 +4. **Real-time updates** - Switch from pull-based polling (`ge
+          +tSnapshots`) to push-based events (`RCTEventEmitter`). Collect
+          +ion thread serializes each snapshot to JSON immediately after 
+          +capture, then signals the ObjC module which emits an `onSnapsh
+          +ot` event to JS. This eliminates polling, sends one snapshot p
+          +er event instead of the full history, and avoids the data race
+          + since serialization happens on the collection thread before a
+          +ny concurrent access.                                         
+      257 +5. **Snapshot list data race** - Resolved by the push model ab
+          +ove: the snapshot is serialized on the collection thread immed
+          +iately after capture, so the ObjC bridge queue never reads the
+          + ArrayList concurrently. If pull-based access is still needed 
+          +(e.g. replaying history), protect `snapshots` with a mutex.   
+
+⏺ Updated challenges #4 and #5 in PLAN.md. #4 now describes the push-based
+  approach via RCTEventEmitter, and #5 notes that the data race is resolved by
+  it (with a mutex fallback if pull access is ever needed).
+
+❯ Instead json what else? 
+
+⏺ The most practical alternative for your setup: skip serialization entirely.
+
+  NSDictionary through the bridge. React Native's bridge already converts ObjC
+  objects to JS objects automatically. Right now you're doing:
+
+  Zig → JSON string → ObjC NSString → JS string → JSON.parse() → JS object
+
+
+  Instead, build an NSDictionary in ObjC from the Zig data:
+
+  Zig → C struct/array → ObjC NSDictionary → JS object (automatic)
+
+
+  The bridge handles NSDictionary → {} and NSArray → [] natively. No
+  serialization, no parsing.
+
+  That means instead of Zig producing a JSON string, it would expose the raw
+  data -- return snapshot structs with pointers to region arrays -- and the ObjC
+   layer builds the dictionaries:
+
+  NSMutableArray *regions = [NSMutableArray array];
+  for (int i = 0; i < count; i++) {
+      [regions addObject:@{
+          @"type":  @(raw_regions[i].type),
+          @"start": @(raw_regions[i].start_addr),
+          @"end":   @(raw_regions[i].end_addr),
+          @"vsize": @(raw_regions[i].vsize),
+          @"rsize": @(raw_regions[i].rsize),
+      }];
+  }
+
+  Then resolve(regions) or emit via RCTEventEmitter -- JS receives a
+  ready-to-use array of objects. No JSON.parse.
+
+  Other options exist (MessagePack, FlatBuffers, raw ArrayBuffer via JSI) but
+  they add dependencies or complexity. NSDictionary is the path of least
+  resistance -- the bridge already does the work for you.
+
+❯ How can I mark return type for an Array of Snapshots? 
+
+⏺ In Zig, you can't return a variable-length array across C ABI. You'd return a
+  pointer and a length:
+
+  const CRegion = extern struct {
+      region_type: [*:0]const u8,
+      start_addr: u64,
+      end_addr: u64,
+      virtual_size: u64,
+      resident_size: u64,
+  };
+
+  const CSnapshot = extern struct {
+      timestamp_ms: i64,
+      regions: [*]CRegion,
+      region_count: c_uint,
+  };
+
+  const SnapshotResult = extern struct {
+      ok: bool,
+      error_msg: ?[*:0]const u8 = null,
+      snapshots: ?[*]CSnapshot = null,
+      count: c_uint = 0,
+  };
+
+  ObjC side:
+
+  typedef struct {
+      const char *region_type;
+      uint64_t start_addr;
+      uint64_t end_addr;
+      uint64_t virtual_size;
+      uint64_t resident_size;
+  } CRegion;
+
+  typedef struct {
+      int64_t timestamp_ms;
+      CRegion *regions;
+      unsigned int region_count;
+  } CSnapshot;
+
+  typedef struct {
+      bool ok;
+      const char *error_msg;
+      CSnapshot *snapshots;
+      unsigned int count;
+  } SnapshotResult;
+
+  Then loop over result.snapshots[0..count], and for each snapshot loop over
+  snapshot.regions[0..region_count], building the NSDictionaries.
+
+❯ Can I use the existing types defined in types.zig? 
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ No. These types use Zig-specific layouts that don't have a stable C ABI:
+
+  - []const u8 -- a Zig slice (pointer + length pair, but Zig-specific layout)
+  - ?[]const u8 -- optional slice
+  - SharingMode -- Zig enum (not guaranteed to match C enum layout)
+  - Permissions -- struct of 3 bools (Zig may pack these differently than C)
+  - std.mem.Allocator -- Zig internal type, meaningless to C
+
+  For extern struct (C ABI), every field must be a C-compatible type: u64,
+  c_int, bool, [*]T, [*:0]const u8, etc.
+
+  You'd need separate extern struct types for the C boundary. Your existing
+  types stay as-is for internal Zig use, and the export functions convert
+  between them:
+
+  // Internal (Zig)          →  Export (C ABI)
+  Region.region_type: []const u8  →  CRegion.region_type: [*:0]const u8
+  Region.detail: ?[]const u8     →  CRegion.detail: ?[*:0]const u8
+  Region.sharing_mode: SharingMode →  CRegion.sharing_mode: c_uint
+  Snapshot.allocator              →  (omitted, C doesn't need it)
+
+  The conversion happens once at the boundary -- your parser and collector keep
+  working with the ergonomic Zig types internally.
+
+❯ How should I generate the CSnapshot objects in collector_get_snapshots? 
+
+⏺ Allocate a CSnapshot array, convert each snapshot's regions into a CRegion
+  array:
+
+  export fn vmmap_collector_get_snapshots(collector: ?*Collector) callconv(.c)
+  SnapshotResult {
+      const c = collector orelse return .{ .ok = false, .error_msg = "Collector
+  not initialized" };
+
+      const snapshots = global_allocator.alloc(CSnapshot, c.snapshots.items.len)
+   catch
+          return .{ .ok = false, .error_msg = "Allocation failed" };
+
+      for (c.snapshots.items, 0..) |snap, i| {
+          const regions = global_allocator.alloc(CRegion, snap.regions.len)
+  catch
+              return .{ .ok = false, .error_msg = "Allocation failed" };
+
+          for (snap.regions, 0..) |r, j| {
+              regions[j] = .{
+                  .region_type = toCString(r.region_type),
+                  .start_addr = r.start_addr,
+                  .end_addr = r.end_addr,
+                  .virtual_size = r.virtual_size,
+                  .resident_size = r.resident_size,
+              };
+          }
+
+          snapshots[i] = .{
+              .timestamp_ms = snap.timestamp_ms,
+              .regions = regions.ptr,
+              .region_count = @intCast(regions.len),
+          };
+      }
+
+      return .{
+          .ok = true,
+          .snapshots = snapshots.ptr,
+          .count = @intCast(snapshots.len),
+      };
+  }
+
+  The string conversion is the tricky part. region_type is a []const u8 (not
+  null-terminated), but C needs [*:0]const u8. You need to copy it:
+
+  fn toCString(slice: []const u8) [*:0]const u8 {
+      const buf = global_allocator.allocSentinel(u8, slice.len, 0) catch return
+  "???";
+      @memcpy(buf, slice);
+      return buf;
+  }
+
+  You'll also need a corresponding free function that walks the structure and
+  frees everything -- the CRegion arrays, the string copies, and the CSnapshot
+  array itself.
+
+  One thing to consider: this is a lot of allocation and copying per call. This
+  is where the push model pays off -- you'd convert one snapshot at a time in
+  the ObjC layer right after capture, instead of bulk-converting the entire
+  history.
+
+❯ Okay. Let's work on the pushing individual snapshots. I assume we are not 
+   doing that in collector.zig because it's not handle ABI?                 
+
+⏺ Right. collector.zig works with internal Zig types and doesn't know about the
+  C boundary. The conversion should happen in main.zig -- that's where the C ABI
+   exports live.
+
+  The flow would be:
+
+  1. collector.zig -- captures a snapshot, calls a callback
+  2. main.zig -- callback converts Zig Snapshot → CSnapshot, passes to ObjC
+  3. ObjC module -- receives CSnapshot, builds NSDictionary, emits event to JS
+
+  The callback is how the collector signals "new snapshot ready" without knowing
+   about C types. You'd add a function pointer to Collector:
+
+  // collector.zig
+  on_snapshot: ?*const fn (*const types.Snapshot) void = null,
+
+  // in collectionLoop, after append:
+  if (self.on_snapshot) |cb| cb(&snapshot);
+
+  Then main.zig sets that callback to a function that does the Zig → C
+  conversion and calls into ObjC.
+
+❯ Where do I register the 'on_snapshot' in collector? In the init and hold  
+  it as a private member?                                                   
+
+⏺ Yes. Add it as a field and accept it in init:
+
+  pub const Collector = struct {
+      pid: std.posix.pid_t,
+      interval_ms: u32,
+      snapshots: std.ArrayList(types.Snapshot),
+      running: std.atomic.Value(bool),
+      allocator: std.mem.Allocator,
+      thread: ?std.Thread,
+      on_snapshot: ?*const fn (*const types.Snapshot) void,
+
+      pub fn init(
+          allocator: std.mem.Allocator,
+          pid: std.posix.pid_t,
+          interval_ms: u32,
+          on_snapshot: ?*const fn (*const types.Snapshot) void,
+      ) Collector {
+          return .{
+              .pid = pid,
+              .interval_ms = interval_ms,
+              .snapshots = .{},
+              .running = std.atomic.Value(bool).init(false),
+              .allocator = allocator,
+              .thread = null,
+              .on_snapshot = on_snapshot,
+          };
+      }
+
+  Not worth making it private -- Zig doesn't have access control like that.
+  Fields are all public. The convention is just "if it's in the struct, it's
+  part of the struct."
+
+❯ src/main.zig:26:80: error: expected type '?*const fn (*const              
+  types.Snapshot) void', found '*const fn (*const types.Snapshot)           
+  callconv(.c) main.CSnapshotResult'                                        
+      collector.* = Collector.init(global_allocator, @intCast(pid),         
+  interval_ms, &vmmap_collector_push_snapshot);                             
+
+⏺ The function signatures don't match. The callback type in Collector expects a
+  plain Zig function, but you're passing one with callconv(.c) and a different
+  return type.
+
+  Two options:
+
+  Option A: Change the callback type in Collector to match:
+
+  on_snapshot: ?*const fn (*const types.Snapshot) callconv(.c) CSnapshotResult,
+
+  But this leaks C ABI details into collector.zig, which you wanted to avoid.
+
+  Option B: Write a thin wrapper in main.zig that matches the expected
+  signature:
+
+  fn onSnapshot(snapshot: *const types.Snapshot) void {
+      _ = vmmap_collector_push_snapshot(snapshot);
+  }
+
+  Then pass &onSnapshot to init. The wrapper calls your C ABI function and
+  discards the result.
+
+  Option B keeps collector.zig clean.
+
+❯ Now, how can I convert Snapshot to CSnapshot in collector_push_snapshot? 
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ push_snapshot doesn't need to return a CSnapshotResult -- it's pushing a
+  single snapshot, not returning a list. It should return a single CSnapshot
+  inside a result:
+
+  const CPushResult = extern struct {
+      ok: bool,
+      error_msg: ?[*:0]const u8 = null,
+      snapshot: ?*CSnapshot = null,
+  };
+
+  fn toCString(slice: []const u8) ?[*:0]const u8 {
+      const buf = global_allocator.allocSentinel(u8, slice.len, 0) catch return
+  null;
+      @memcpy(buf, slice);
+      return buf;
+  }
+
+  export fn vmmap_collector_push_snapshot(snapshot: *const types.Snapshot)
+  callconv(.c) CPushResult {
+      const regions = global_allocator.alloc(CRegion, snapshot.regions.len)
+  catch
+          return .{ .ok = false, .error_msg = "Allocation failed" };
+
+      for (snapshot.regions, 0..) |r, i| {
+          regions[i] = .{
+              .region_type = toCString(r.region_type) orelse return .{ .ok =
+  false, .error_msg = "String allocation failed" },
+              .start_addr = r.start_addr,
+              .end_addr = r.end_addr,
+              .virtual_size = r.virtual_size,
+              .resident_size = r.resident_size,
+          };
+      }
+
+      const c_snapshot = global_allocator.create(CSnapshot) catch
+          return .{ .ok = false, .error_msg = "Allocation failed" };
+
+      c_snapshot.* = .{
+          .timestamp_ms = snapshot.timestamp_ms,
+          .regions = regions.ptr,
+          .region_count = @intCast(regions.len),
+      };
+
+      return .{ .ok = true, .snapshot = c_snapshot };
+  }
+
+  This gets called once per capture from the collection thread. ObjC receives
+  the CSnapshot*, builds the NSDictionary, emits the event, then you'll need a
+  free function to clean up the CSnapshot and its region strings.
+
+❯ Now how do I receive this on the ObjC side? 
+
+⏺ The missing piece is: right now onSnapshot converts the snapshot but the
+  result goes nowhere (_ =). You need Zig to call back into ObjC.
+
+  Pass a C function pointer from ObjC to Zig during create:
+
+  In main.zig, store the ObjC callback:
+
+  var on_push: ?*const fn (*const CSnapshot) callconv(.c) void = null;
+
+  export fn vmmap_collector_create(
+      pid: c_int,
+      interval_ms: c_uint,
+      callback: ?*const fn (*const CSnapshot) callconv(.c) void,
+  ) callconv(.c) CResult {
+      on_push = callback;
+      // ... rest of create
+  }
+
+  Then onSnapshot converts and pushes to ObjC:
+
+  fn onSnapshot(snapshot: *const types.Snapshot) void {
+      const result = vmmap_collector_push_snapshot(snapshot);
+      if (result.ok) {
+          if (on_push) |cb| cb(result.snapshot.?);
+      }
+  }
+
+  In ObjC, define the callback and pass it during create:
+
+  // Forward declare so the callback can reference the module
+  static VmmapCollectorModule *_sharedInstance = nil;
+
+  void onSnapshotCallback(const CSnapshot *snapshot) {
+      NSMutableArray *regions = [NSMutableArray
+  arrayWithCapacity:snapshot->region_count];
+
+      for (unsigned int i = 0; i < snapshot->region_count; i++) {
+          CRegion r = snapshot->regions[i];
+          [regions addObject:@{
+              @"type":  [NSString stringWithUTF8String:r.region_type],
+              @"start": @(r.start_addr),
+              @"end":   @(r.end_addr),
+              @"vsize": @(r.virtual_size),
+              @"rsize": @(r.resident_size),
+          }];
+      }
+
+      NSDictionary *dict = @{
+          @"timestamp_ms": @(snapshot->timestamp_ms),
+          @"regions": regions,
+      };
+
+      [_sharedInstance sendEventWithName:@"onSnapshot" body:dict];
+  }
+
+  Update the module to extend RCTEventEmitter instead of NSObject:
+
+  @interface VmmapCollectorModule : RCTEventEmitter <RCTBridgeModule>
+
+  // ...
+
+  - (instancetype)init {
+      self = [super init];
+      if (self) {
+          _sharedInstance = self;
+          // ... dlopen, dlsym
+      }
+      return self;
+  }
+
+  - (NSArray<NSString *> *)supportedEvents {
+      return @[@"onSnapshot"];
+  }
+
+  And pass the callback when creating:
+
+  typedef Result (*CreateFn)(int, unsigned int, void (*)(const CSnapshot *));
+
+  // in create method:
+  Result r = _createFn(pid, intervalMs, &onSnapshotCallback);
+
+  JS side listens:
+
+  import { NativeEventEmitter } from 'react-native';
+
+  const emitter = new NativeEventEmitter(VmmapCollectorModule);
+
+  useEffect(() => {
+      const sub = emitter.addListener('onSnapshot', (snapshot) => {
+          setSnapshots(prev => [...prev, snapshot]);
+      });
+      return () => sub.remove();
+  }, []);
+
+  No polling. Each snapshot flows: collection thread → Zig conversion → ObjC
+  callback → RCTEventEmitter → JS listener.
+
+❯ Help fix errors in ObjC module 
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Several issues:
+
+  1. Two @interface declarations -- one says NSObject, the other says
+  RCTEventEmitter. Need just one.
+  2. Missing @end on the interface before @implementation
+  3. Missing @implementation -- the callback and methods are floating between
+  the second @interface and @end
+  4. Missing RCT_EXPORT_MODULE()
+  5. _sharedInstance and callback are inside the @interface -- they need to be
+  outside or in the @implementation
+  6. CreateFn typedef doesn't include the callback parameter
+  7. Need #import <React/RCTEventEmitter.h>
+
+  Here's the corrected file:
+
+⏺ Update(macos/VmmapVisualizer-macOS/VmmapCollectorModule.m)
+  ⎿  (No changes)
+
+❯ Check now 
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Three remaining issues:
+
+  1. Missing #import <React/RCTEventEmitter.h> -- you extend RCTEventEmitter but
+   don't import it
+  2. Missing RCT_EXPORT_MODULE() -- bridge won't discover the module
+  3. Missing _sharedInstance = self in init -- the callback can't reach the
+  module to emit events
+  4. CreateFn typedef (line 32) doesn't include the callback parameter -- still
+  the old signature
+
+  What errors are you seeing? Are these the ones, or is there something else?
+
+❯ I want to cast snapshot as not-null - src/main.zig:44:23: error: expected 
+   type '*const main.CSnapshot', found '?*main.CSnapshot'                   
+          on_push(result.snapshot);                                         
+
+⏺ result.snapshot is ?*CSnapshot (optional). Unwrap it with .?:
+
+  on_push(result.snapshot.?);
+
+  Or if you want to be safe:
+
+  if (result.snapshot) |snap| on_push(snap);
+
+❯ src/main.zig:43:42: error: expected '|', found ','                        
+      if (result.ok and result.snapshot) |_, snapshot| {                    
+
+⏺ You can't combine two conditions with |capture|. Only the last expression in
+  an if can be unwrapped. Chain them:
+
+  if (result.ok) {
+      if (result.snapshot) |snapshot| {
+          on_push(snapshot);
+      }
+  }
+
+❯ Update descriptions as need in main.zig 
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/main.zig)
+  ⎿  Added 2 lines, removed 5 lines
+      11      ref: ?*anyopaque = null,
+      12  };
+      13  
+      14 -/// Set global_allocator to c_allocator (malloc/free). Must be 
+         -called once before                                             
+      15 -/// any other vmmap_* function. Uses callconv(.c) so the symbol
+         - is callable from                                              
+      16 -/// C / Objective-C / any C FFI — this is how the React Native 
+         -bridge will call it.                                           
+      14  /// Heap-allocate a Collector targeting `pid`, polling every `i
+          nterval_ms`.
+      18 -/// Returns null on allocation failure. c_int/c_uint give stabl
+         -e C ABI types;                                                 
+      19 -/// ?*Collector is an optional pointer — null at the C boundary
+         - means "failed".                                               
+      15 +/// Stores the callback for pushing CSnapshots to the ObjC brid
+         +ge.                                                            
+      16 +/// Returns CResult with ref pointing to the Collector on succe
+         +ss.                                                            
+      17  export fn vmmap_collector_create(
+      18      pid: c_int,
+      19      interval_ms: c_uint,
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/main.zig)
+  ⎿  Added 1 line
+      81  }
+      82  
+      83  /// Return the number of snapshots collected so far. Returns 0 
+          for null collector.
+      84 +/// Note: with push-based delivery, this is mainly useful for d
+         +ebugging.                                                      
+      85  export fn vmmap_collector_snapshot_count(collector: ?*Collector
+          ) callconv(.c) c_uint {
+      86      if (collector) |c| {
+      87          return @intCast(c.snapshots.items.len);
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/main.zig)
+  ⎿  Added 3 lines
+      109      snapshot: ?*CSnapshot = null,
+      110  };
+      111  
+      112 +/// Convert an internal Zig Snapshot to a C-ABI CSnapshot. All
+          +ocates CRegion array                                          
+      113 +/// and null-terminated copies of region_type strings. Called 
+          +from the collection                                           
+      114 +/// thread via onSnapshot callback. Caller receives ownership 
+          +of the CSnapshot.                                             
+      115  export fn vmmap_collector_push_snapshot(snapshot: *const types
+           .Snapshot) callconv(.c) CSnapshotResult {
+      116      const regions: []CRegion = global_allocator.alloc(CRegion,
+            snapshot.regions.len) catch return .{
+      117          .ok = false,
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/main.zig)
+  ⎿  Added 2 lines, removed 3 lines
+      151      return buf;
+      152  }
+      153  
+      154 -/// Free a null-terminated string returned by vmmap_collector_
+          -get_snapshots_json.                                           
+      155 -/// Walks to the sentinel to reconstruct the slice length, the
+          -n frees.                                                      
+      156 -/// Safe to call with null. Caller must not use the pointer af
+          -ter this.                                                     
+      154 +/// Free a null-terminated heap string. Walks to the sentinel 
+          +to reconstruct                                                
+      155 +/// the slice length, then frees. Safe to call with null.     
+      156  export fn vmmap_free_string(ptr: ?[*:0]u8) callconv(.c) void {
+      157      if (ptr) |p| {
+      158          var len: usize = 0;
+
+⏺ Updated four doc comments:
+  - create -- reflects callback parameter and CResult return
+  - snapshot_count -- notes it's mainly for debugging now with push model
+  - push_snapshot -- added description (was missing)
+  - free_string -- removed stale reference to get_snapshots_json
+
+❯ Now, collector.zig 
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Two descriptions need updating:
+
+  1. The struct-level doc doesn't mention the callback
+  2. init doesn't mention the on_snapshot parameter
+  3. captureSnapshot doesn't mention calling the callback
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/collector.zig)
+  ⎿  Added 2 lines, removed 1 line
+       4  
+       5  /// Manages periodic vmmap snapshot collection for a target pro
+          cess.
+       6  /// Runs a background thread that spawns `vmmap <pid>` at a fix
+          ed interval,
+       7 -/// parses the output, and appends Snapshots to an ArrayList.  
+       7 +/// parses the output, appends Snapshots to an ArrayList, and p
+         +ushes each                                                     
+       8 +/// new snapshot to the caller via on_snapshot callback.       
+       9  pub const Collector = struct {
+      10      pid: std.posix.pid_t,
+      11      interval_ms: u32,
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/collector.zig)
+  ⎿  Added 2 lines, removed 2 lines
+      16      on_snapshot: ?*const fn (*const types.Snapshot) void,
+      17  
+      18      /// Construct a Collector on the stack. No heap allocation 
+          or threads yet —
+      19 -    /// just stores config and initializes the snapshot list. C
+         -all start() to                                                 
+      20 -    /// begin collecting.                                      
+      19 +    /// just stores config, initializes the snapshot list, and 
+         +registers the                                                  
+      20 +    /// on_snapshot callback. Call start() to begin collecting.
+      21      pub fn init(
+      22          allocator: std.mem.Allocator,
+      23          pid: std.posix.pid_t,
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/collector.zig)
+  ⎿  Added 5 lines, removed 4 lines
+      86      }
+      87  
+      88      /// Spawn `vmmap <pid>` as a child process, read its stdout
+           (up to 10MB),
+      89 -    /// and append a timestamped Snapshot. The pid is formatted
+         - into a stack                                                  
+      90 -    /// buffer (no heap alloc needed for a small int-to-string 
+         -conversion).                                                   
+      91 -    /// stdout is read fully before wait() to avoid deadlock — 
+         -if vmmap fills                                                 
+      92 -    /// the pipe buffer and blocks on write, wait() would never
+         - return.                                                       
+      89 +    /// append a timestamped Snapshot, and invoke on_snapshot c
+         +allback if set.                                                
+      90 +    /// The pid is formatted into a stack buffer (no heap alloc
+         + needed for a                                                  
+      91 +    /// small int-to-string conversion). stdout is read fully b
+         +efore wait() to                                                
+      92 +    /// avoid deadlock — if vmmap fills the pipe buffer and blo
+         +cks on write,                                                  
+      93 +    /// wait() would never return.                             
+      94      fn captureSnapshot(self: *Collector) !void {
+      95          var pid_buf: [16]u8 = undefined;
+      96          const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{sel
+          f.pid}) catch unreachable;
+
+⏺ Updated three doc comments in collector.zig:
+  - Struct-level -- mentions the callback push
+  - init -- mentions registering on_snapshot
+  - captureSnapshot -- mentions invoking the callback after append
+
+❯ Need debug logs in both 
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/main.zig)
+  ⎿  Added 4 lines
+      36  }
+      37  
+      38  fn onSnapshot(snapshot: *const types.Snapshot) void {
+      39 +    std.debug.print("[vmmap] onSnapshot: converting {d} regions
+         +\n", .{snapshot.regions.len});                                 
+      40      const result = vmmap_collector_push_snapshot(snapshot);
+      41      if (result.ok) {
+      42          if (result.snapshot) |s| {
+      43 +            std.debug.print("[vmmap] onSnapshot: pushing to Obj
+         +C bridge\n", .{});                                             
+      44              on_push(s);
+      45          }
+      46 +    } else {                                                   
+      47 +        std.debug.print("[vmmap] onSnapshot: conversion failed:
+         + {s}\n", .{result.error_msg orelse "unknown"});                
+      48      }
+      49  }
+      50  
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/main.zig)
+  ⎿  Added 1 line
+      117  /// and null-terminated copies of region_type strings. Called 
+           from the collection
+      118  /// thread via onSnapshot callback. Caller receives ownership 
+           of the CSnapshot.
+      119  export fn vmmap_collector_push_snapshot(snapshot: *const types
+           .Snapshot) callconv(.c) CSnapshotResult {
+      120 +    std.debug.print("[vmmap] push_snapshot: {d} regions, ts={d
+          +}\n", .{ snapshot.regions.len, snapshot.timestamp_ms });      
+      121      const regions: []CRegion = global_allocator.alloc(CRegion,
+            snapshot.regions.len) catch return .{
+      122          .ok = false,
+      123          .error_msg = "Regions allocation failed",
+
+⏺ Now collector.zig:
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/collector.zig)
+  ⎿  Added 5 lines, removed 1 line
+      121          };
+      122  
+      123          try self.snapshots.append(self.allocator, snapshot);
+      124 +        std.debug.print("[vmmap] captureSnapshot: appended, to
+          +tal={d}\n", .{self.snapshots.items.len});                     
+      125  
+      125 -        if (self.on_snapshot) |cb| cb(&snapshot);             
+      126 +        if (self.on_snapshot) |cb| {                          
+      127 +            std.debug.print("[vmmap] captureSnapshot: invoking
+          + on_snapshot callback\n", .{});                               
+      128 +            cb(&snapshot);                                    
+      129 +        }                                                     
+      130      }
+      131  };
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/collector.zig)
+  ⎿  Added 1 line
+      52      /// before entering collectionLoop.
+      53      pub fn start(self: *Collector) !void {
+      54          if (self.running.load(.acquire)) return;
+      55 +        std.debug.print("[vmmap] start: spawning collection thr
+         +ead for pid {d}\n", .{self.pid});                              
+      56          self.running.store(true, .release);
+      57          self.thread = try std.Thread.spawn(.{}, collectionLoop,
+           .{self});
+      58      }
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/collector.zig)
+  ⎿  Added 1 line
+      63      /// mid-capture when we return — safe to call deinit() afte
+          r this.
+      64      pub fn stop(self: *Collector) void {
+      65          if (!self.running.load(.acquire)) return;
+      66 +        std.debug.print("[vmmap] stop: signaling collection thr
+         +ead\n", .{});                                                  
+      67          self.running.store(false, .release);
+      68  
+      69          if (self.thread) |t| {
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/collector.zig)
+  ⎿  Added 1 line
+      69          if (self.thread) |t| {
+      70              t.join();
+      71              self.thread = null;
+      72 +            std.debug.print("[vmmap] stop: collection thread jo
+         +ined\n", .{});                                                 
+      73          }
+      74      }
+      75  
+
+⏺ Added debug logs for the full snapshot lifecycle:
+
+  collector.zig:
+  - start -- thread spawn
+  - stop -- signal and join
+  - captureSnapshot -- append count and callback invocation
+
+  main.zig:
+  - onSnapshot -- region count, push to ObjC, or conversion failure
+  - push_snapshot -- region count and timestamp
+
+✻ Worked for 38s
+
+❯ captureSnapshot is not getting logged 
+
+⏺ The captureSnapshot log is after append on line 122, but if anything before it
+   fails (spawn, read, wait, parse), the function returns early via try. Add a
+  log at the top:
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Update(~/Work/vmmap Visualizer/collector/src/collector.zig)
+  ⎿  Added 1 line
+       95      /// avoid deadlock — if vmmap fills the pipe buffer and bl
+           ocks on write,
+       96      /// wait() would never return.
+       97      fn captureSnapshot(self: *Collector) !void {
+       98 +        std.debug.print("[vmmap] captureSnapshot: spawning vmm
+          +ap for pid {d}\n", .{self.pid});                              
+       99          var pid_buf: [16]u8 = undefined;
+      100          const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{se
+           lf.pid}) catch unreachable;
+      101  
+
+⏺ If you're not seeing even this log, the issue is likely upstream --
+  captureSnapshot is failing and collectionLoop is catching the error. Check
+  what's being printed on the "Snapshot failed: {}" line (line 80). That will
+  tell you which try is failing.
+
+❯ Why does a console.log in React-Native app show up in Xcode's logs? 
+
+⏺ React Native's console.log is bridged to NSLog under the hood. When JS calls
+  console.log("hello"), the JS engine calls into native code which calls
+  NSLog(@"hello"), and NSLog writes to stderr -- which is what Xcode's console
+  captures.
+
+  Same reason your std.debug.print logs show up there too -- it also writes to
+  stderr.
+
+❯ Batch commit 
+
+⏺ Bash(cd "/Users/nainesh/Work/vmmap Visualizer" && git log --oneline -5)
+  ⎿  a554d51 Await create and start calls in useCollector hook
+     872ddd5 Return Result struct from Zig start fn for structured error ha
+     ndling
+     … +5 lines (ctrl+o to expand)
+
+⏺ Four logical units here:
+
+  1. Zig: Push-based snapshot delivery with callback, CSnapshot structs, debug
+  logs
+  2. ObjC bridge: RCTEventEmitter, callback, updated CreateFn signature
+  3. JS: Event listener instead of polling
+  4. PLAN.md: Push model and data race documentation
+
+  Plus a trivial whitespace change in project.pbxproj.
+
+⏺ Bash(cd "/Users/nainesh/Work/vmmap Visualizer" && git add
+      collector/src/main.zig collector/src/collector.zig && git commit -m "Add
+      push-based snapshot delivery via c…)
+  ⎿  [main d02b137] Add push-based snapshot delivery via callback
+      2 files changed, 121 insertions(+), 59 deletions(-)
+
+⏺ Bash(cd "/Users/nainesh/Work/vmmap Visualizer" && git add
+      frontend/macos/VmmapVisualizer-macOS/VmmapCollectorModule.m
+      frontend/macos/VmmapVisualizer.xcodeproj/projec…)
+  ⎿  [main c579740] Switch ObjC bridge to RCTEventEmitter with snapshot cal
+     lback
+      2 files changed, 55 insertions(+), 7 deletions(-)
+
+⏺ Bash(cd "/Users/nainesh/Work/vmmap Visualizer" && git add
+      frontend/src/useCollector.ts frontend/src/App.tsx && git commit -m
+      "Replace polling with NativeEventEmitter…)
+  ⎿  [main c8736b7] Replace polling with NativeEventEmitter listener in use
+     Collector
+      2 files changed, 10 insertions(+), 15 deletions(-)
+
+⏺ Bash(cd "/Users/nainesh/Work/vmmap Visualizer" && git add PLAN.md && git
+      commit -m "Document push-based delivery and data race resolution in
+      PLAN.md")
+  ⎿  [main 3219518] Document push-based delivery and data race resolution i
+     n PLAN.md
+      1 file changed, 20 insertions(+), 19 deletions(-)
+
+⏺ Bash(cd "/Users/nainesh/Work/vmmap Visualizer" && git status && git log
+      --oneline -6)
+  ⎿  On branch main
+     nothing to commit, working tree clean
+     3219518 Document push-based delivery and data race resolution in PLAN.
+     … +8 lines (ctrl+o to expand)
+
+⏺ Four commits:
+
+  - d02b137 -- Zig push-based callback + CSnapshot conversion
+  - c579740 -- ObjC RCTEventEmitter + snapshot callback
+  - c8736b7 -- JS NativeEventEmitter listener
+  - 3219518 -- PLAN.md documentation
+
+✻ Brewed for 39s
+
+❯ Is there Zig programming book? 
+
+⏺ Yes, a few:
+
+  - Zig Programming Language by Andrew Kelley (the creator) -- the official docs
+   at ziglang.org/documentation are the closest thing to an authoritative
+  reference
+  - Learning Zig by Karl Seguin -- free online at openmymind.net/learning_zig,
+  concise and practical
+  - Zig in Depth by -- a newer book, available on Ziglearn
+
+  The Karl Seguin one is probably the best starting point. It's short, covers
+  the core concepts well, and doesn't waste your time.
+
+❯ Create a markdown file describing concepts that I learned throughout this 
+   chat.                                                                    
+
+⏺ Write(~/Work/vmmap Visualizer/LEARNINGS.md)
+  ⎿  Wrote 166 lines to ../LEARNINGS.md
+      1 # Concepts Learned - vmmap Visualizer
+      2 
+      3 ## React Native Bridge
+      4 
+      5 ### RCT_EXPORT_METHOD
+      6 
+      7 The macro does two things at compile time:
+      8 1. Generates a hidden `+__rct_export__<name>` class method that r
+        eturns metadata (selector string)
+      9 2. Defines the actual instance method
+     … +156 lines (ctrl+o to expand)
+
+⏺ Created LEARNINGS.md covering:
+
+  - React Native Bridge -- RCT_EXPORT_METHOD internals, ObjC syntax, promises,
+  RCTEventEmitter, NSDictionary vs JSON, console.log routing
+  - Zig C ABI -- extern structs, default values, return conventions,
+  slice-to-C-string, optional unwrapping, function pointer callbacks
+  - macOS Threading -- pthreads, the three threads in your app, GCD, thread
+  communication, viewing threads
+  - Architecture -- pull vs push data delivery
+  - Dynamic Library Loading -- dlopen/dlsym, why Zig isn't needed at runtime
+
+❯ cd into frontend 
+
+⏺ Bash(cd "/Users/nainesh/Work/vmmap Visualizer/frontend")
+  ⎿  Done
+
+⏺ Done.
+
+❯ Nothing shows up in the app after the user enters the process id.         
+  However, collector is running properly and is collecting snapshots.       
+
+⏺ Let me check the current state of the app and hook.
+
+⏺ Read 3 files (ctrl+o to expand)
+
+⏺ The code looks correct -- the hook stores snapshots in state and Timeline
+  renders them. The issue is likely that the event listener isn't receiving
+  events. Two things to check:
+
+  1. Are you seeing [vmmap] onSnapshot: pushing to ObjC bridge in Xcode logs? If
+   not, the conversion is failing or the callback isn't being called.
+  2. Is sendEventWithName actually firing? Add a log in the ObjC callback to
+  confirm:
+
+  void onSnapshotCallback(const CSnapshot *snapshot) {
+    NSLog(@"[vmmap] ObjC: onSnapshotCallback called, %u regions",
+  snapshot->region_count);
+    // ... rest of function
+    NSLog(@"[vmmap] ObjC: emitting onSnapshot event");
+    [_sharedInstance sendEventWithName:@"onSnapshot" body:dict];
+  }
+
+  If those logs appear but JS still doesn't receive the event, the problem is
+  likely that _sharedInstance is nil at the time the callback fires -- the
+  collector thread could invoke the callback before init stores self in
+  _sharedInstance. Can you check what the Xcode logs show?
